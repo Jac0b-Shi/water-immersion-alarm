@@ -91,6 +91,7 @@ Release/
 # CLion files
 cmake-build*/
 .clion/
+.idea/
 
 # xpacks - development tools (downloaded binaries)
 xpacks/
