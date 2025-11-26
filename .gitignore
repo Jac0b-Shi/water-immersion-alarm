@@ -94,3 +94,6 @@ cmake-build*/
 
 # xpacks - development tools (downloaded binaries)
 xpacks/
+
+# CH32V203 Evaluation Tool - contains example code from manufacturer
+EVT/
