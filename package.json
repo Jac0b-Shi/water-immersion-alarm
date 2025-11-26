@@ -1,0 +1,93 @@
+{
+  "name": "@<scope>/water-immersion-alarm",
+  "version": "0.1.0",
+  "description": "A source xPack with <your-description-here>",
+  "main": "",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/<user-id>/water-immersion-alarm.git"
+  },
+  "homepage": "https://github.com/<user-id>/water-immersion-alarm/",
+  "bugs": {
+    "url": "https://github.com/<user-id>/water-immersion-alarm/issues/"
+  },
+  "keywords": [
+    "xpack"
+  ],
+  "author": {
+    "name": "<author-name>",
+    "email": "<author-email>",
+    "url": "<author-url>"
+  },
+  "license": "MIT",
+  "config": {},
+  "dependencies": {},
+  "devDependencies": {},
+  "xpack": {
+    "minimumXpmRequired": "0.20.8",
+    "dependencies": {},
+    "devDependencies": {
+      "@xpack-dev-tools/ninja-build": {
+        "specifier": "1.13.1-1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/cmake": {
+        "specifier": "3.31.9-1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/openocd": {
+        "specifier": "0.12.0-7.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/aarch64-none-elf-gcc": {
+        "specifier": "14.2.1-1.1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/arm-none-eabi-gcc": {
+        "specifier": "14.2.1-1.1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/riscv-none-elf-gcc": {
+        "specifier": "15.2.0-1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/meson-build": {
+        "specifier": "1.8.5-1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/qemu-arm": {
+        "specifier": "9.2.4-1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/qemu-riscv": {
+        "specifier": "9.2.4-1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/mingw-w64-gcc": {
+        "specifier": "15.2.0-1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/clang": {
+        "specifier": "20.1.8-1.1",
+        "local": "link",
+        "platforms": "all"
+      }
+    },
+    "properties": {},
+    "actions": {},
+    "buildConfigurations": {}
+  }
+}
