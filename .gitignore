@@ -30,3 +30,70 @@
 *.exe
 *.out
 *.app
+
+# RISC-V CH32V203 Firmware Development
+# Compiler and linker output
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.asm
+*.axf
+*.crf
+*.htm
+*.dep
+*.lnp
+*.sct
+*.scvd
+*.iex
+*.tra
+*.bak
+*.pbi
+
+# Build directories
+build/
+cmake-build*/
+
+# IDE specific files
+*.uvprojx
+*.uvgui*
+*.uvoptx
+*.eww
+*.ewp
+*.ewd
+*.icf
+
+# Debug and temporary files
+*.log
+*.tmp
+*.bak
+*.orig
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# OpenOCD files
+*.cfg
+openocd.log
+
+# MounRiver Studio files
+Debug/
+Release/
+*.wsp
+*.wsdt
+*.wsfl
+*.wpr
+*.layout
+
+# CLion files
+cmake-build*/
+.clion/
+
+# xpacks - development tools (downloaded binaries)
+xpacks/
+
+# CH32V203 Evaluation Tool - contains example code from manufacturer
+EVT/
