@@ -97,3 +97,9 @@ xpacks/
 
 # CH32V203 Evaluation Tool - contains example code from manufacturer
 EVT/
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
