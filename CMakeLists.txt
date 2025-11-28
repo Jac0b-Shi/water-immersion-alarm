@@ -17,7 +17,15 @@ if(CROSS_GCC)
     set(TOOLPATH "${TOOLCHAIN_BIN_DIR}/riscv-wch-elf-")
     message(STATUS "Found toolchain: ${TOOLPATH}")
 else()
-    message(FATAL_ERROR "Cannot find riscv-wch-elf-gcc. Please ensure the toolchain is installed and in your PATH.")
+    # 如果找不到riscv-wch-elf-gcc，尝试寻找riscv-none-elf-gcc
+    find_program(CROSS_GCC_ALT riscv-none-elf-gcc)
+    if(CROSS_GCC_ALT)
+        get_filename_component(TOOLCHAIN_BIN_DIR ${CROSS_GCC_ALT} DIRECTORY)
+        set(TOOLPATH "${TOOLCHAIN_BIN_DIR}/riscv-none-elf-")
+        message(STATUS "Found alternative toolchain: ${TOOLPATH}")
+    else()
+        message(FATAL_ERROR "Cannot find riscv-wch-elf-gcc or riscv-none-elf-gcc. Please ensure the RISC-V GCC toolchain is installed and in your PATH.")
+    endif()
 endif()
 
 # 如果当前系统是Windows
@@ -46,7 +54,7 @@ if (WIN32)
     # 设置SIZE工具路径
     set(SIZE ${TOOLPATH}size.exe)
 
-    # 如果当前系统是UNIX或类UNIX系统
+# 如果当前系统是UNIX或类UNIX系统
 elseif (UNIX)
     # 输出消息：当前是UNIX或类UNIX系统
     MESSAGE(STATUS "Now is UNIX-like OS!")
@@ -72,7 +80,7 @@ elseif (UNIX)
     # 设置SIZE工具路径
     set(SIZE ${TOOLPATH}size)
 
-    # 如果当前系统不是Windows也不是UNIX或类UNIX系统
+# 如果当前系统不是Windows也不是UNIX或类UNIX系统
 else ()
     # 输出消息：不支持的系统
     MESSAGE(STATUS "Unsupported system!")

@@ -73,8 +73,13 @@
 #define Size_4KB                   0x1000
 #define Size_32KB                  0x8000
 
-#define FLASH_EraseAll_Delay(t)  ({for(uint32_t i = 0; i<t; i++){asm("nop");}})
-
+// Replace macro definition with inline function to comply with ISO C standard
+static inline void FLASH_EraseAll_Delay(uint32_t delay_cycles)
+{
+    for(uint32_t i = 0; i < delay_cycles; i++){
+        asm("nop");
+    }
+}
 
 /*********************************************************************
  * @fn      FLASH_Unlock

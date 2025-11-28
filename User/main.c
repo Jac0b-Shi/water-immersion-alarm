@@ -7,6 +7,7 @@
  *******************************************************************************/
 
 #include "debug.h"
+#include <inttypes.h>
 
 /* Global define */
 #define LED_TASK_INTERVAL_MS    500
@@ -73,8 +74,8 @@ int main(void)
     USART_Printf_Init(115200);
     
     printf("LED Test Program Started\r\n");
-    printf("SystemClk:%d\r\n",SystemCoreClock);
-    printf("ChipID:%08x\r\n", DBGMCU_GetCHIPID());
+    printf("SystemClk:%" PRIu32 "\r\n", SystemCoreClock);
+    printf("ChipID:%08" PRIx32 "\r\n", DBGMCU_GetCHIPID());
 
     LED_Init();
 
