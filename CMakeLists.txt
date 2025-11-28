@@ -10,8 +10,15 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE "STATIC_LIBRARY")
 # 设置CMake的最低版本要求为3.20
 cmake_minimum_required(VERSION 3.20)
 
-# 设置工具链路径为相对路径
-set(TOOLPATH "${CMAKE_SOURCE_DIR}/xpacks/@xpack-dev-tools/riscv-none-elf-gcc/.content/bin/riscv-none-elf-")
+# 使用find_program查找工具链而不是硬编码路径
+find_program(CROSS_GCC riscv-wch-elf-gcc)
+if(CROSS_GCC)
+    get_filename_component(TOOLCHAIN_BIN_DIR ${CROSS_GCC} DIRECTORY)
+    set(TOOLPATH "${TOOLCHAIN_BIN_DIR}/riscv-wch-elf-")
+    message(STATUS "Found toolchain: ${TOOLPATH}")
+else()
+    message(FATAL_ERROR "Cannot find riscv-wch-elf-gcc. Please ensure the toolchain is installed and in your PATH.")
+endif()
 
 # 如果当前系统是Windows
 if (WIN32)
