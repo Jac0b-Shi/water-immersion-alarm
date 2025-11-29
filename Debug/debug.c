@@ -11,12 +11,67 @@
  * microcontroller manufactured by Nanjing Qinheng Microelectronics.
  *******************************************************************************/
 #include "debug.h"
+#include "ch32v20x_tim.h"
+#include <string.h>
 
 static uint8_t  p_us = 0;
 static uint16_t p_ms = 0;
 
 #define DEBUG_DATA0_ADDRESS  ((volatile uint32_t*)0xE0000380)
 #define DEBUG_DATA1_ADDRESS  ((volatile uint32_t*)0xE0000384)
+
+/*********************************************************************
+ * @fn      Timer3_Delay_Us
+ *
+ * @brief   利用TIM3实现微秒级延时
+ *
+ * @param   n - 需要延时的微秒数
+ *
+ * @return  None
+ */
+static void Timer3_Delay_Us(uint32_t n)
+{
+    TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
+    
+    // 使能TIM3时钟
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
+    
+    // 配置TIM3
+    TIM_TimeBaseStructure.TIM_Period = n;
+    TIM_TimeBaseStructure.TIM_Prescaler = SystemCoreClock / 1000000 - 1; // 设置为1MHz计数频率
+    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
+    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM3, &TIM_TimeBaseStructure);
+    
+    // 清除更新标志位
+    TIM_ClearFlag(TIM3, TIM_FLAG_Update);
+    
+    // 启动定时器
+    TIM_Cmd(TIM3, ENABLE);
+    
+    // 等待计数完成
+    while(!TIM_GetFlagStatus(TIM3, TIM_FLAG_Update));
+    
+    // 关闭定时器
+    TIM_Cmd(TIM3, DISABLE);
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, DISABLE);
+}
+
+/*********************************************************************
+ * @fn      Timer3_Delay_Ms
+ *
+ * @brief   利用TIM3实现毫秒级延时
+ *
+ * @param   n - 需要延时的毫秒数
+ *
+ * @return  None
+ */
+static void Timer3_Delay_Ms(uint32_t n)
+{
+    while(n--){
+        Timer3_Delay_Us(1000);
+    }
+}
 
 /*********************************************************************
  * @fn      Delay_Init
@@ -27,9 +82,8 @@ static uint16_t p_ms = 0;
  */
 void Delay_Init(void)
 {
-    // 修复SysTick延时计算错误，使用向上取整确保最小延时精度
-    p_us = SystemCoreClock / 4000000;
-    if (SystemCoreClock % 4000000) p_us++;
+    // 使用向上取整公式确保p_us至少为1，避免时钟频率过低时延时失效
+    p_us = (SystemCoreClock + 3999999) / 4000000;
     p_ms = p_us * 1000;
 }
 
@@ -44,17 +98,8 @@ void Delay_Init(void)
  */
 void Delay_Us(uint32_t n)
 {
-    uint32_t i;
-
-    SysTick->SR &= ~(1 << 0);
-    i = (uint32_t)n * p_us;
-
-    SysTick->CMP = i;
-    SysTick->CTLR |= (1 << 4);
-    SysTick->CTLR |= (1 << 5) | (1 << 0);
-
-    while((SysTick->SR & (1 << 0)) != (1 << 0));
-    SysTick->CTLR &= ~(1 << 0);
+    // 使用TIM3实现精确延时，避免直接访问SysTick寄存器可能引起的硬件异常
+    Timer3_Delay_Us(n);
 }
 
 /*********************************************************************
@@ -68,17 +113,8 @@ void Delay_Us(uint32_t n)
  */
 void Delay_Ms(uint32_t n)
 {
-    uint32_t i;
-
-    SysTick->SR &= ~(1 << 0);
-    i = (uint32_t)n * p_ms;
-
-    SysTick->CMP = i;
-    SysTick->CTLR |= (1 << 4);
-    SysTick->CTLR |= (1 << 5) | (1 << 0);
-
-    while((SysTick->SR & (1 << 0)) != (1 << 0));
-    SysTick->CTLR &= ~(1 << 0);
+    // 使用TIM3实现精确延时，避免直接访问SysTick寄存器可能引起的硬件异常
+    Timer3_Delay_Ms(n);
 }
 
 /*********************************************************************
@@ -182,11 +218,11 @@ int _write(int fd, char *buf, int size)
 
 #if (SDI_PRINT == SDI_PR_TRUE)
     int writeSize = size;
+    uint32_t timeout = 10000;  // 将超时计数器移至循环外部
 
     do
     {
         // 等待数据寄存器为空，添加超时保护防止死锁
-        uint32_t timeout = 10000;
         while ((*(DEBUG_DATA0_ADDRESS) != 0u) && timeout--)
         {
             // 添加小延迟以避免总线冲突
@@ -213,13 +249,17 @@ int _write(int fd, char *buf, int size)
             uint32_t data0_temp = writeSize;
             uint32_t data1_temp = 0;
             
+            // 使用临时缓冲区避免越界读取
+            uint8_t temp[7] = {0};
+            memcpy(temp, buf + i, writeSize);
+            
             // 根据实际剩余字节数逐字节构造data0和data1，避免强制类型转换导致越界读取
-            for (int k = 0; k < 3 && i + k < size; k++) {
-                data0_temp |= (uint32_t)(buf[i + k]) << (8 + k * 8);
+            for (int k = 0; k < 3 && k < writeSize; k++) {
+                data0_temp |= (uint32_t)temp[k] << (8 + k * 8);
             }
             
-            for (int k = 0; k < 4 && i + 3 + k < size; k++) {
-                data1_temp |= (uint32_t)(buf[i + 3 + k]) << (k * 8);
+            for (int k = 0; k < 4 && (3 + k) < writeSize; k++) {
+                data1_temp |= (uint32_t)temp[3 + k] << (k * 8);
             }
             
             *(DEBUG_DATA1_ADDRESS) = data1_temp;
