@@ -79,7 +79,7 @@ Thumbs.db
 openocd.log
 
 # MounRiver Studio files
-Debug/
+# Debug/
 Release/
 *.wsp
 *.wsdt
