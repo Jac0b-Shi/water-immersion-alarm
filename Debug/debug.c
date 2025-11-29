@@ -101,6 +101,9 @@ void Delay_Init(void)
     p_us = (SystemCoreClock + 3999999) / 4000000;
     p_ms = p_us * 1000;
     
+    // 确保p_us至少为1，防止在低时钟频率下计算结果为0导致延时失效
+    if (p_us == 0) p_us = 1;
+    
     // 初始化TIM3时钟和基本参数，避免在每次延时调用时重复初始化
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
     
