@@ -67,7 +67,6 @@ cmake-build*/
 # Debug and temporary files
 *.log
 *.tmp
-*.bak
 *.orig
 *~
 

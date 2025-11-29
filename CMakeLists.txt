@@ -138,6 +138,21 @@ include_directories(
         Peripheral/inc
 )
 
+# 检查是否定义了SDI_PRINT宏
+if(DEFINED SDI_PRINT)
+    if(${SDI_PRINT} STREQUAL "TRUE")
+        add_definitions(-DSDI_PRINT=SDI_PR_TRUE)
+        message(STATUS "Building with SDI print support")
+    else()
+        add_definitions(-DSDI_PRINT=SDI_PR_FALSE)
+        message(STATUS "Building with USART print support")
+    endif()
+else()
+    # 默认关闭SDI打印
+    add_definitions(-DSDI_PRINT=SDI_PR_FALSE)
+    message(STATUS "Building with USART print support (default)")
+endif()
+
 # 宏定义
 # add_definitions(-DDEBUG=1)
 
@@ -190,4 +205,20 @@ add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
         COMMAND ${CMAKE_OBJCOPY} -Obinary $<TARGET_FILE:${PROJECT_NAME}.elf> ${BIN_FILE} # 生成 .bin 文件
         COMMAND ${CMAKE_OBJDUMP} --all-headers --demangle --disassemble $<TARGET_FILE:${PROJECT_NAME}.elf> > ${LST_FILE} # 生成 .lst 文件
         COMMENT "Building ${HEX_FILE}\nBuilding ${BIN_FILE}" # 在生成输出文件后显示消息
+)
+
+# 创建SDI版本的构建目标
+add_custom_target(build-sdi
+    COMMAND ${CMAKE_COMMAND} -DSDI_PRINT=TRUE ${CMAKE_SOURCE_DIR}
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+    COMMENT "Building SDI version"
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+# 创建USART版本的构建目标
+add_custom_target(build-usart
+    COMMAND ${CMAKE_COMMAND} -DSDI_PRINT=FALSE ${CMAKE_SOURCE_DIR}
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+    COMMENT "Building USART version"
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
