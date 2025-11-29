@@ -81,9 +81,11 @@ static void Timer3_Delay_Us(uint32_t n)
  */
 static void Timer3_Delay_Ms(uint32_t n)
 {
-    while(n--){
-        Timer3_Delay_Us(1000);
-    }
+    TIM_SetAutoreload(TIM3, p_ms * n);
+    TIM_ClearFlag(TIM3, TIM_FLAG_Update);
+    TIM_Cmd(TIM3, ENABLE);
+    while(!TIM_GetFlagStatus(TIM3, TIM_FLAG_Update));
+    TIM_Cmd(TIM3, DISABLE);
 }
 
 /*********************************************************************
