@@ -192,8 +192,11 @@ int _write(int fd, char *buf, int size)
         if(writeSize > 7)
         {
             // 发送8字节数据（前1字节长度，后7字节数据）
-            *(DEBUG_DATA1_ADDRESS) = (*(buf+i+3)) | (*(buf+i+4)<<8) | (*(buf+i+5)<<16) | (*(buf+i+6)<<24);
-            *(DEBUG_DATA0_ADDRESS) = (7u) | (*(buf+i)<<8) | (*(buf+i+1)<<16) | (*(buf+i+2)<<24);
+            // 确保访问不会越界
+            if (i + 6 < size) {
+                *(DEBUG_DATA1_ADDRESS) = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16) | ((uint32_t)(*(buf+i+6))<<24);
+                *(DEBUG_DATA0_ADDRESS) = (7u) | (*(buf+i)<<8) | (*(buf+i+1)<<16) | (*(buf+i+2)<<24);
+            }
 
             i += 7;
             writeSize -= 7;
@@ -204,35 +207,50 @@ int _write(int fd, char *buf, int size)
             uint32_t data0_temp = writeSize;
             uint32_t data1_temp = 0;
             
+            // 确保访问不会越界
             switch(writeSize)
             {
                 case 7:
-                    data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16) | ((uint32_t)(*(buf+i+6))<<24);
-                    data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    if (i + 6 < size) {
+                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16) | ((uint32_t)(*(buf+i+6))<<24);
+                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    }
                     break;
                 case 6:
-                    data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16);
-                    data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    if (i + 5 < size) {
+                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16);
+                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    }
                     break;
                 case 5:
-                    data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16);
-                    data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    if (i + 5 < size) {
+                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16);
+                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    }
                     break;
                 case 4:
-                    data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16);
-                    data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    if (i + 5 < size) {
+                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16);
+                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    }
                     break;
                 case 3:
-                    data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8);
-                    data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    if (i + 4 < size) {
+                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8);
+                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    }
                     break;
                 case 2:
-                    data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8);
-                    data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    if (i + 4 < size) {
+                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8);
+                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    }
                     break;
                 case 1:
-                    data1_temp = (*(buf+i+3));
-                    data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    if (i + 3 < size) {
+                        data1_temp = (*(buf+i+3));
+                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
+                    }
                     break;
                 case 0:
                 default:
@@ -280,8 +298,8 @@ void *_sbrk(ptrdiff_t incr)
     extern char _heap_end[];
     static char *curbrk = _end;
 
-    if ((curbrk + incr < _end) || (curbrk + incr > _heap_end))
-    return (void*)(-1);  // 修复指针运算警告
+    if (incr < 0 || (curbrk + incr < _end) || (curbrk + incr > _heap_end))
+        return (void*)(-1);  // 修复指针运算警告
 
     curbrk += incr;
     return curbrk - incr;

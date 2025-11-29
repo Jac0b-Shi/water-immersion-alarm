@@ -48,7 +48,7 @@ void SDI_Printf_Enable(void);
 #if(DEBUG)
   #define PRINT(format, ...)    printf(format, ##__VA_ARGS__)
 #else
-  #define PRINT(X...)
+  #define PRINT(...) do {} while(0)
 #endif
 
 #ifdef __cplusplus
