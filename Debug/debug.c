@@ -208,23 +208,14 @@ int _write(int fd, char *buf, int size)
             uint32_t data0_temp = writeSize;
             uint32_t data1_temp = 0;
             
-            // 使用临时字节数组避免指针别名导致的越界，确保数据构造安全
-            uint8_t tmp[8] = {0};
-            
-            // 根据实际剩余字节数动态构造发送数据
+            // 根据实际剩余字节数逐字节构造data0和data1，避免强制类型转换导致越界读取
             for (int k = 0; k < 3 && i + k < size; k++) {
-                tmp[1 + k] = buf[i + k];  // tmp[1]~tmp[3]存储buf[i]~buf[i+2]
+                data0_temp |= (uint32_t)(buf[i + k]) << (8 + k * 8);
             }
             
             for (int k = 0; k < 4 && i + 3 + k < size; k++) {
-                tmp[4 + k] = buf[i + 3 + k];  // tmp[4]~tmp[7]存储buf[i+3]~buf[i+6]
+                data1_temp |= (uint32_t)(buf[i + 3 + k]) << (k * 8);
             }
-            
-            data0_temp = *(uint32_t*)tmp;
-            data1_temp = *(uint32_t*)(tmp + 4);
-            
-            // 应用长度掩码
-            data0_temp = (data0_temp & 0xFFFFFF00) | (writeSize & 0xFF);
             
             *(DEBUG_DATA1_ADDRESS) = data1_temp;
             *(DEBUG_DATA0_ADDRESS) = data0_temp;
