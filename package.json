@@ -4,7 +4,10 @@
   "description": "基于STM32F103/CH32V203的浸水警报器，开发中",
   "main": "",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "cmake . && make",
+    "build:sdi": "cmake -DSDI_PRINT=TRUE . && make",
+    "build:usart": "cmake -DSDI_PRINT=FALSE . && make"
   },
   "repository": {
     "type": "git",

@@ -67,7 +67,6 @@ cmake-build*/
 # Debug and temporary files
 *.log
 *.tmp
-*.bak
 *.orig
 *~
 
@@ -80,7 +79,7 @@ Thumbs.db
 openocd.log
 
 # MounRiver Studio files
-Debug/
+# Debug/
 Release/
 *.wsp
 *.wsdt
