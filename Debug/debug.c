@@ -21,23 +21,24 @@ static uint16_t p_ms = 0;
 /*********************************************************************
  * @fn      Delay_Init
  *
- * @brief   Initializes Delay Funcation.
+ * @brief   初始化延时功能，计算每微秒和每毫秒对应的时钟周期数
  *
  * @return  none
  */
 void Delay_Init(void)
 {
     // 修复SysTick延时计算错误，使用向上取整确保最小延时精度
-    p_us = (SystemCoreClock + 3999999) / 4000000; // 向上取整到1μs分辨率
+    p_us = SystemCoreClock / 4000000;
+    if (SystemCoreClock % 4000000) p_us++;
     p_ms = p_us * 1000;
 }
 
 /*********************************************************************
  * @fn      Delay_Us
  *
- * @brief   Microsecond Delay Time.
+ * @brief   微秒级延时函数
  *
- * @param   n - Microsecond number.
+ * @param   n - 需要延时的微秒数
  *
  * @return  None
  */
@@ -59,9 +60,9 @@ void Delay_Us(uint32_t n)
 /*********************************************************************
  * @fn      Delay_Ms
  *
- * @brief   Millisecond Delay Time.
+ * @brief   毫秒级延时函数
  *
- * @param   n - Millisecond number.
+ * @param   n - 需要延时的毫秒数
  *
  * @return  None
  */
@@ -83,9 +84,9 @@ void Delay_Ms(uint32_t n)
 /*********************************************************************
  * @fn      USART_Printf_Init
  *
- * @brief   Initializes the USARTx peripheral.
+ * @brief   初始化USART外设，支持printf输出功能
  *
- * @param   baudrate - USART communication baud rate.
+ * @param   baudrate - USART通信波特率
  *
  * @return  None
  */
@@ -147,7 +148,7 @@ void USART_Printf_Init(uint32_t baudrate)
 /*********************************************************************
  * @fn      SDI_Printf_Enable
  *
- * @brief   Initializes the SDI printf Function.
+ * @brief   初始化SDI打印功能
  *
  * @param   None
  *
@@ -163,12 +164,13 @@ void SDI_Printf_Enable(void)
 /*********************************************************************
  * @fn      _write
  *
- * @brief   Support Printf Function
+ * @brief   支持printf函数的实际写入实现
  *
- * @param   *buf - UART send Data.
- *          size - Data length
+ * @param   fd   - 文件描述符（未使用）
+ *          buf  - 待发送的数据缓冲区
+ *          size - 数据长度
  *
- * @return  size: Data length
+ * @return  实际写入的数据长度，出错时返回-1
  */
 __attribute__((used))
 int _write(int fd, char *buf, int size)
@@ -183,12 +185,15 @@ int _write(int fd, char *buf, int size)
 
     do
     {
-        // 等待数据寄存器为空
-        while( (*(DEBUG_DATA0_ADDRESS) != 0u))
+        // 等待数据寄存器为空，添加超时保护防止死锁
+        uint32_t timeout = 10000;
+        while ((*(DEBUG_DATA0_ADDRESS) != 0u) && timeout--)
         {
             // 添加小延迟以避免总线冲突
             Delay_Us(1);
         }
+        // 超时检查，防止硬件异常导致死锁
+        if (timeout == 0) return -1; // 超时退出
 
         if(writeSize > 7)
         {
@@ -245,9 +250,11 @@ int _write(int fd, char *buf, int size)
 /*********************************************************************
  * @fn      _sbrk
  *
- * @brief   Change the spatial position of data segment.
+ * @brief   调整数据段的空间位置（用于内存管理）
  *
- * @return  size: Data length
+ * @param   incr - 增量大小
+ *
+ * @return  新的堆顶指针，失败时返回(void*)(-1)
  */
 __attribute__((used))
 void *_sbrk(ptrdiff_t incr)

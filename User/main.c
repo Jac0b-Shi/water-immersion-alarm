@@ -26,7 +26,7 @@
 #include "ch32v20x_usart.h"
 
 /* 全局变量定义 */
-volatile uint8_t water_status = 0;  // 0表示无水，1表示有水
+volatile uint8_t water_status = 0;  // 当前水位状态：0表示无水，1表示有水
 volatile uint8_t last_water_status = 0;  // 上一次的水位状态
 
 /*********************************************************************
@@ -188,11 +188,12 @@ void Delay_Custom(uint32_t nCount)
  */
 int main(void)
 {
+    // 配置NVIC优先级分组并初始化系统时钟
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
     SystemCoreClockUpdate();
     Delay_Init();
     
-    // 同时初始化SDI和USART打印
+    // 初始化串口打印功能（根据配置选择SDI或USART）
 #if (SDI_PRINT == SDI_PR_TRUE)
     SDI_Printf_Enable();  // 启用SDI打印
     printf("System Clock: %d Hz\r\n", SystemCoreClock);
@@ -213,6 +214,7 @@ int main(void)
     // 输出启动信息
     printf("Water Immersion Detection System Started\r\n");
 
+    // 主循环
     while(1)
     {
         // 检查传感器状态
