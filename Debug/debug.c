@@ -31,39 +31,43 @@ static volatile uint16_t p_ms = 0;
  */
 static void Timer3_Delay_Us(uint32_t n)
 {
-    // 处理超过16位计数器最大值的情况
+    // 处理超过16位计数器最大值的情况，使用循环而非递归避免栈溢出
     while (n > 65535) {
-        Timer3_Delay_Us(65535);
+        // 设置计数周期为最大值
+        TIM_SetAutoreload(TIM3, 65535);
+        
+        // 清除更新标志位
+        TIM_ClearFlag(TIM3, TIM_FLAG_Update);
+        
+        // 启动定时器
+        TIM_Cmd(TIM3, ENABLE);
+        
+        // 等待计数完成
+        while(!TIM_GetFlagStatus(TIM3, TIM_FLAG_Update));
+        
+        // 关闭定时器
+        TIM_Cmd(TIM3, DISABLE);
+        
         n -= 65535;
     }
     
-    // 如果n为0则直接返回
-    if (n == 0) return;
-
-    TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
-    
-    // 使能TIM3时钟
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
-    
-    // 配置TIM3
-    TIM_TimeBaseStructure.TIM_Period = n;
-    TIM_TimeBaseStructure.TIM_Prescaler = SystemCoreClock / 1000000 - 1; // 设置为1MHz计数频率
-    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
-    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
-    TIM_TimeBaseInit(TIM3, &TIM_TimeBaseStructure);
-    
-    // 清除更新标志位
-    TIM_ClearFlag(TIM3, TIM_FLAG_Update);
-    
-    // 启动定时器
-    TIM_Cmd(TIM3, ENABLE);
-    
-    // 等待计数完成
-    while(!TIM_GetFlagStatus(TIM3, TIM_FLAG_Update));
-    
-    // 关闭定时器
-    TIM_Cmd(TIM3, DISABLE);
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, DISABLE);
+    // 处理剩余的延时
+    if (n > 0) {
+        // 设置实际需要的计数周期
+        TIM_SetAutoreload(TIM3, n);
+        
+        // 清除更新标志位
+        TIM_ClearFlag(TIM3, TIM_FLAG_Update);
+        
+        // 启动定时器
+        TIM_Cmd(TIM3, ENABLE);
+        
+        // 等待计数完成
+        while(!TIM_GetFlagStatus(TIM3, TIM_FLAG_Update));
+        
+        // 关闭定时器
+        TIM_Cmd(TIM3, DISABLE);
+    }
 }
 
 /*********************************************************************
@@ -91,9 +95,24 @@ static void Timer3_Delay_Ms(uint32_t n)
  */
 void Delay_Init(void)
 {
+    TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
+    
     // 使用向上取整公式确保p_us至少为1，避免时钟频率过低时延时失效
     p_us = (SystemCoreClock + 3999999) / 4000000;
     p_ms = p_us * 1000;
+    
+    // 初始化TIM3时钟和基本参数，避免在每次延时调用时重复初始化
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
+    
+    TIM_TimeBaseStructure.TIM_Prescaler = SystemCoreClock / 1000000 - 1; // 设置为1MHz计数频率
+    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
+    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    // 先用最大值初始化，实际使用时会根据需要调整
+    TIM_TimeBaseStructure.TIM_Period = 65535;  
+    TIM_TimeBaseInit(TIM3, &TIM_TimeBaseStructure);
+    
+    // 默认关闭定时器，延时函数中再控制启停
+    TIM_Cmd(TIM3, DISABLE);
 }
 
 /*********************************************************************
