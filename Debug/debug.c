@@ -207,57 +207,21 @@ int _write(int fd, char *buf, int size)
             uint32_t data0_temp = writeSize;
             uint32_t data1_temp = 0;
             
-            // 确保访问不会越界
-            switch(writeSize)
-            {
-                case 7:
-                    if (i + 6 < size) {
-                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16) | ((uint32_t)(*(buf+i+6))<<24);
-                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
-                    }
-                    break;
-                case 6:
-                    if (i + 5 < size) {
-                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16);
-                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
-                    }
-                    break;
-                case 5:
-                    if (i + 5 < size) {
-                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16);
-                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
-                    }
-                    break;
-                case 4:
-                    if (i + 5 < size) {
-                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16);
-                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
-                    }
-                    break;
-                case 3:
-                    if (i + 4 < size) {
-                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8);
-                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
-                    }
-                    break;
-                case 2:
-                    if (i + 4 < size) {
-                        data1_temp = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8);
-                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
-                    }
-                    break;
-                case 1:
-                    if (i + 3 < size) {
-                        data1_temp = (*(buf+i+3));
-                        data0_temp |= ((uint32_t)(*(buf+i))<<8) | ((uint32_t)(*(buf+i+1))<<16) | ((uint32_t)(*(buf+i+2))<<24);
-                    }
-                    break;
-                case 0:
-                default:
-                    data1_temp = 0;
-                    data0_temp = 0;
-                    break;
+            // 使用更安全的方式处理数据，避免越界访问
+            uint8_t *p0 = (uint8_t*)&data0_temp;
+            uint8_t *p1 = (uint8_t*)&data1_temp;
+            
+            // 根据实际剩余字节数动态构造发送数据
+            for (int k = 0; k < 3 && i + k < size; k++) {
+                p0[1 + k] = buf[i + k];  // data0的高24位存储buf[i]~buf[i+2]
             }
+            
+            for (int k = 0; k < 4 && i + 3 + k < size; k++) {
+                p1[k] = buf[i + 3 + k];  // data1的32位存储buf[i+3]~buf[i+6]
+            }
+            
+            // 应用长度掩码
+            data0_temp = (data0_temp & 0xFFFFFF00) | (writeSize & 0xFF);
             
             *(DEBUG_DATA1_ADDRESS) = data1_temp;
             *(DEBUG_DATA0_ADDRESS) = data0_temp;
