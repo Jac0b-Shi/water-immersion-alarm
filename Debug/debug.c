@@ -14,8 +14,8 @@
 #include "ch32v20x_tim.h"
 #include <string.h>
 
-static uint8_t  p_us = 0;
-static uint16_t p_ms = 0;
+static volatile uint8_t  p_us = 0;
+static volatile uint16_t p_ms = 0;
 
 #define DEBUG_DATA0_ADDRESS  ((volatile uint32_t*)0xE0000380)
 #define DEBUG_DATA1_ADDRESS  ((volatile uint32_t*)0xE0000384)
@@ -31,6 +31,15 @@ static uint16_t p_ms = 0;
  */
 static void Timer3_Delay_Us(uint32_t n)
 {
+    // 处理超过16位计数器最大值的情况
+    while (n > 65535) {
+        Timer3_Delay_Us(65535);
+        n -= 65535;
+    }
+    
+    // 如果n为0则直接返回
+    if (n == 0) return;
+
     TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
     
     // 使能TIM3时钟
@@ -234,10 +243,14 @@ int _write(int fd, char *buf, int size)
         if(writeSize > 7)
         {
             // 发送8字节数据（前1字节长度，后7字节数据）
-            // 确保访问不会越界
-            if (i + 6 < size) {
-                *(DEBUG_DATA1_ADDRESS) = (*(buf+i+3)) | ((uint32_t)(*(buf+i+4))<<8) | ((uint32_t)(*(buf+i+5))<<16) | ((uint32_t)(*(buf+i+6))<<24);
-                *(DEBUG_DATA0_ADDRESS) = (7u) | (*(buf+i)<<8) | (*(buf+i+1)<<16) | (*(buf+i+2)<<24);
+            // 使用临时缓冲区确保不发生越界访问
+            uint8_t temp[7] = {0};
+            int bytesToCopy = (writeSize > 7) ? 7 : writeSize;
+            memcpy(temp, buf + i, (size - i) > bytesToCopy ? bytesToCopy : (size - i));
+            
+            if(writeSize >= 7) {
+                *(DEBUG_DATA1_ADDRESS) = (temp[3]) | ((uint32_t)temp[4]<<8) | ((uint32_t)temp[5]<<16) | ((uint32_t)temp[6]<<24);
+                *(DEBUG_DATA0_ADDRESS) = (7u) | (temp[0]<<8) | (temp[1]<<16) | (temp[2]<<24);
             }
 
             i += 7;
@@ -301,7 +314,12 @@ void *_sbrk(ptrdiff_t incr)
 {
     extern char _end[];
     extern char _heap_end[];
-    static char *curbrk = _end;
+    static char *curbrk = NULL;  // 修改为NULL初始化
+
+    // 首次调用时初始化curbrk
+    if (curbrk == NULL) {
+        curbrk = _end;
+    }
 
     if (incr < 0 || (curbrk + incr < _end) || (curbrk + incr > _heap_end))
         return (void*)(-1);  // 修复指针运算警告
