@@ -43,9 +43,6 @@ void GPIO_Init_For_Sensor(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure = {0};
 
-    // 使能GPIOA和GPIOB时钟
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB, ENABLE);
-
     // 配置PA0为浮空输入（传感器输入）
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
@@ -74,9 +71,6 @@ void USART1_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure = {0};
     USART_InitTypeDef USART_InitStructure = {0};
-
-    // 使能GPIOA和USART1时钟
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_USART1, ENABLE);
 
     // 配置PA9为USART1_TX（复用推挽输出）
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;
@@ -209,6 +203,9 @@ int main(void)
     printf("USART Print Enabled\r\n");
 #endif
 
+    // 统一使能所有外设时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_USART1, ENABLE);
+    
     // 初始化GPIO和USART1
     GPIO_Init_For_Sensor();
     USART1_Init();
