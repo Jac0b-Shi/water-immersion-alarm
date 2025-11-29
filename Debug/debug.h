@@ -38,6 +38,8 @@ extern "C" {
 #define SDI_PRINT   SDI_PR_FALSE
 #endif
 
+/* Enable Print Macro */
+#define ENABLE_PRINT 1
 
 void Delay_Init(void);
 void Delay_Us(uint32_t n);
@@ -45,7 +47,7 @@ void Delay_Ms(uint32_t n);
 void USART_Printf_Init(uint32_t baudrate);
 void SDI_Printf_Enable(void);
 
-#if(DEBUG)
+#if (ENABLE_PRINT)
   #define PRINT(format, ...)    printf(format, ##__VA_ARGS__)
 #else
   #define PRINT(...) do {} while(0)

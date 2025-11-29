@@ -27,8 +27,9 @@ static uint16_t p_ms = 0;
  */
 void Delay_Init(void)
 {
-    p_us = SystemCoreClock / 8000000;
-    p_ms = (uint16_t)p_us * 1000;
+    // 修复SysTick延时计算错误，使用向上取整确保最小延时精度
+    p_us = (SystemCoreClock + 3999999) / 4000000; // 向上取整到1μs分辨率
+    p_ms = p_us * 1000;
 }
 
 /*********************************************************************
@@ -207,18 +208,20 @@ int _write(int fd, char *buf, int size)
             uint32_t data0_temp = writeSize;
             uint32_t data1_temp = 0;
             
-            // 使用更安全的方式处理数据，避免越界访问
-            uint8_t *p0 = (uint8_t*)&data0_temp;
-            uint8_t *p1 = (uint8_t*)&data1_temp;
+            // 使用临时字节数组避免指针别名导致的越界，确保数据构造安全
+            uint8_t tmp[8] = {0};
             
             // 根据实际剩余字节数动态构造发送数据
             for (int k = 0; k < 3 && i + k < size; k++) {
-                p0[1 + k] = buf[i + k];  // data0的高24位存储buf[i]~buf[i+2]
+                tmp[1 + k] = buf[i + k];  // tmp[1]~tmp[3]存储buf[i]~buf[i+2]
             }
             
             for (int k = 0; k < 4 && i + 3 + k < size; k++) {
-                p1[k] = buf[i + 3 + k];  // data1的32位存储buf[i+3]~buf[i+6]
+                tmp[4 + k] = buf[i + 3 + k];  // tmp[4]~tmp[7]存储buf[i+3]~buf[i+6]
             }
+            
+            data0_temp = *(uint32_t*)tmp;
+            data1_temp = *(uint32_t*)(tmp + 4);
             
             // 应用长度掩码
             data0_temp = (data0_temp & 0xFFFFFF00) | (writeSize & 0xFF);

@@ -26,8 +26,8 @@
 #include "ch32v20x_usart.h"
 
 /* 全局变量定义 */
-uint8_t water_status = 0;  // 0表示无水，1表示有水
-uint8_t last_water_status = 0;  // 上一次的水位状态
+volatile uint8_t water_status = 0;  // 0表示无水，1表示有水
+volatile uint8_t last_water_status = 0;  // 上一次的水位状态
 
 /*********************************************************************
  * @fn      GPIO_Init_For_Sensor
