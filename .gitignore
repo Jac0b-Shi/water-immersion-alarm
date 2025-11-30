@@ -1,0 +1,112 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# RISC-V CH32V203 Firmware Development
+# Compiler and linker output
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.asm
+*.axf
+*.crf
+*.htm
+*.dep
+*.lnp
+*.sct
+*.scvd
+*.iex
+*.tra
+*.bak
+*.pbi
+
+# Build directories
+build/
+cmake-build*/
+
+# Configuration files (contain sensitive information)
+config.env
+User/config.h
+
+# IDE specific files
+*.uvprojx
+*.uvgui*
+*.uvoptx
+*.eww
+*.ewp
+*.ewd
+*.icf
+
+# Debug and temporary files
+*.log
+*.tmp
+*.orig
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# OpenOCD files
+*.cfg
+openocd.log
+
+# MounRiver Studio files
+# Debug/
+Release/
+*.wsp
+*.wsdt
+*.wsfl
+*.wpr
+*.layout
+
+# CLion files
+cmake-build*/
+.clion/
+.idea/
+
+# xpacks - development tools (downloaded binaries)
+xpacks/
+
+# CH32V203 Evaluation Tool - contains example code from manufacturer
+EVT/
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+
+# ESP8266 files
+ESP-WROOM*/
