@@ -1,0 +1,64 @@
+{
+  "name": "@SHU-SPE-Sandrone/water-immersion-alarm",
+  "version": "0.1.0",
+  "description": "基于STM32F103/CH32V203的浸水警报器，开发中",
+  "main": "",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "cmake . && make",
+    "build:sdi": "cmake -DSDI_PRINT=TRUE . && make",
+    "build:usart": "cmake -DSDI_PRINT=FALSE . && make"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://gitee.com/SHU-SPE-Sandrone/water-immersion-alarm.git"
+  },
+  "homepage": "https://gitee.com/SHU-SPE-Sandrone/water-immersion-alarm/",
+  "bugs": {
+    "url": "https://gitee.com/SHU-SPE-Sandrone/water-immersion-alarm/issues/"
+  },
+  "keywords": [
+    "xpack",
+    "ch32v203",
+    "risc-v",
+    "water-alarm"
+  ],
+  "author": {
+    "name": "Jac0b_Shi",
+    "email": "jac0b_shi@gitee.com",
+    "url": "https://gitee.com/Jac0b_Shi"
+  },
+  "license": "LGPL-3.0-only",
+  "config": {},
+  "dependencies": {},
+  "devDependencies": {},
+  "xpack": {
+    "minimumXpmRequired": "0.20.8",
+    "dependencies": {},
+    "devDependencies": {
+      "@xpack-dev-tools/ninja-build": {
+        "specifier": "1.13.1-1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/cmake": {
+        "specifier": "3.31.9-1.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/openocd": {
+        "specifier": "0.12.0-7.1",
+        "local": "link",
+        "platforms": "all"
+      },
+      "@xpack-dev-tools/riscv-none-elf-gcc": {
+        "specifier": "15.2.0-1.1",
+        "local": "link",
+        "platforms": "all"
+      }
+    },
+    "properties": {},
+    "actions": {},
+    "buildConfigurations": {}
+  }
+}

@@ -1,0 +1,29 @@
+/*
+ * 自动生成的配置文件模板
+ * 请勿手动编辑此文件！
+ * 
+ * 修改配置请编辑 config.env 后重新运行 generate_config.py
+ * 生成时间: YYYY-MM-DD HH:MM:SS
+ */
+
+#ifndef __CONFIG_H
+#define __CONFIG_H
+
+/* WiFi配置 */
+#define WIFI_SSID "your_wifi_ssid"
+#define WIFI_PASSWORD "your_wifi_password"
+
+/* 企业微信Webhook配置 */
+#define WEBHOOK_KEY "your_wechat_webhook_key"
+
+/* 浸水检测阈值（单位：mV） */
+#ifndef WATER_THRESHOLD_MV
+#define WATER_THRESHOLD_MV 1000
+#endif
+
+/* HTTPS/SSL配置 */
+#ifndef USE_SSL
+#define USE_SSL 1  // 1=使用SSL(443端口), 0=使用HTTP(80端口)
+#endif
+
+#endif /* __CONFIG_H */
