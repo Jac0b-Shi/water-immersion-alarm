@@ -28,14 +28,14 @@
 ## 硬件要求
 
 ### 主控芯片
-- **型号**：CH32V203C8T6 / CH32V203G8U6
+- **型号**：CH32V203C8T6
 - **架构**：RISC-V 32位内核
 - **主频**：96MHz
 - **Flash**：64KB
 - **RAM**：20KB
 
 ### 外设模块
-- **WiFi模块**：ESP8266-01S / ESP-WROOM-02（AT固件v2.2.0及以上）
+- **WiFi模块**：ESP01S (ESP8266芯片)（AT固件v2.2.0及以上）
 - **浸水传感器**：模拟量输出型（0-3.3V）
 - **LED指示灯**：共阳极LED × 2
 - **电源**：3.3V稳压电源
@@ -69,10 +69,10 @@
 ## 软件环境
 
 ### 开发工具
-- **IDE**：CLion 2024.2+ / MounRiver Studio
-- **编译器**：RISC-V GCC 12 (MounRiver Studio 工具链)
+- **IDE**：CLion 2025+
+- **编译器**：RISC-V GCC 12 (MounRiver Studio 工具链，首选) / @xpack riscv-none-embed-gcc
 - **CMake**：3.20+
-- **调试器**：WCH-Link
+- **调试器**：WCH-LinkE / CH340G
 
 ### 依赖库
 - FreeRTOS（已集成）

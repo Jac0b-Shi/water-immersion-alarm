@@ -108,5 +108,6 @@ CMakeFiles/
 Makefile
 cmake_install.cmake
 
-# ESP8266 files
-ESP-WROOM*/
+# Exception: Force include ESP8266 firmware files
+!ESP8266-Firmware/
+!ESP8266-Firmware/*.*
