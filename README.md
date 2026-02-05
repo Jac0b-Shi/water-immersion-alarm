@@ -1,9 +1,26 @@
 # 浸水检测报警系统
 
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
-[![Platform](https://img.shields.io/badge/Platform-CH32V203-green.svg)](https://www.wch.cn/)
+[![Platform](https://img.shields.io/badge/Platform-CH32V20x-green.svg)](https://www.wch.cn/)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://gitee.com/SHU-SPE-Sandrone/water-immersion-alarm)
 
-基于CH32V203 RISC-V微控制器和ESP8266 WiFi模块的智能浸水检测报警系统，支持实时监测、企业微信推送等功能。
+基于CH32V20x系列RISC-V微控制器的多功能浸水检测报警系统，支持多种通信方式和实时监测功能。
+
+## 🚀 版本更新 (V1.1.0)
+
+**重要更新**：现已全面支持CH32V208内置10M以太网！相比WiFi方案更加稳定可靠。
+
+### 新增功能
+- ✅ **CH32V208内置以太网支持** - 直接RJ45连接，无需额外WiFi模块
+- ✅ **HTTP代理转发功能** - 解决以太网无法直接访问HTTPS的问题
+- ✅ **模块化通信架构** - 可灵活选择ESP8266、BC260 NB-IoT或以太网
+- ✅ **增强的调试功能** - 更丰富的日志输出和状态监控
+
+### 技术改进
+- 🔄 **重构配置管理系统** - 统一的config.h配置文件
+- 🔄 **优化DMA通信机制** - 更稳定的串口数据传输
+- 🔄 **改进错误处理** - 更完善的异常恢复机制
+- 🔄 **增强安全防护** - 敏感信息自动保护
 
 ## 功能特性
 
@@ -30,9 +47,9 @@
 ### 主控芯片
 - **型号**：CH32V203C8T6
 - **架构**：RISC-V 32位内核
-- **主频**：96MHz
-- **Flash**：64KB
-- **RAM**：20KB
+- **主频**：120MHz
+- **Flash**：480KB
+- **RAM**：64KB
 
 ### 外设模块
 - **WiFi模块**：ESP01S (ESP8266芯片)（AT固件v2.2.0及以上）
