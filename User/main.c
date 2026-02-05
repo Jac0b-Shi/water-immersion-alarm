@@ -1,38 +1,40 @@
 /********************************** (C) COPYRIGHT *******************************
  * File Name          : main.c
  * Author             : Jac0b_Shi (SHU-SPE-Sandrone)
- * Version            : V1.0.0
- * Date               : 2025/11/30
+ * Version            : V1.1.0
+ * Date               : 2026/02/06
  * Description        : 浸水检测报警系统 - 主程序
- *                      基于CH32V203 RISC-V微控制器和ESP8266 WiFi模块
- *                      支持实时浸水检测和企业微信报警推送
+ *                      基于CH32V208 RISC-V微控制器，支持多种通信方式
+ *                      实时浸水检测和企业微信报警推送
  * Repository         : https://gitee.com/SHU-SPE-Sandrone/water-immersion-alarm
  * Issues             : https://gitee.com/SHU-SPE-Sandrone/water-immersion-alarm/issues
  *********************************************************************************
- * Copyright (c) 2025 SHU-SPE-Sandrone
+ * Copyright (c) 2025-2026 SHU-SPE-Sandrone
  *
  * This project is licensed under the GNU Lesser General Public License v3.0
  * You may obtain a copy of the license at:
  *     https://www.gnu.org/licenses/lgpl-3.0.html
  *
- * 本项目基于WCH官方CH32V203示例代码修改而来
+ * 本项目基于WCH官方CH32V20x示例代码修改而来
  * Original work Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
  *
  * 主要功能：
- * - 通过ADC检测浸水传感器模拟量（阈值可配置）
- * - 双LED指示系统状态（正常/报警）
- * - ESP8266 WiFi模块自动连接网络
- * - 通过企业微信Webhook API推送报警消息（支持HTTPS/SSL）
- * - 基于FreeRTOS的实时任务调度
- * - 完整的状态管理和错误处理
+ * - 通过ADC检测浸水传感器模拟量（阈值可配置，默认1000mV）
+ * - 双LED指示系统状态（绿色=正常，红色=报警）
+ * - 支持多种通信方式（可在config.h中配置）：
+ *   - CH32V208内置10M以太网（推荐，需HTTP代理转发HTTPS）
+ *   - ESP8266 WiFi模块
+ *   - BC260 NB-IoT模块（需HTTP代理转发HTTPS）
+ * - 通过企业微信Webhook API推送报警消息
+ * - 完整的状态管理和去抖动处理
  *******************************************************************************/
 
 /*
  *@Note
- * 硬件连接说明：
+ * 硬件连接说明（CH32V208WBU6）：
  *
  * ADC输入：
- * - PA0：浸水传感器模拟量输入（0-3.3V，阈值1000mV）
+ * - PA0：浸水传感器模拟量输入（ADC值与电压mV约为1:1关系）
  *
  * LED指示灯（共阳极，低电平点亮）：
  * - PB0：正常状态指示灯（绿色）- 无水时点亮
@@ -40,17 +42,28 @@
  *
  * 调试串口（USART1，115200波特率，8N1）：
  * - PA9：USART1_TX - 系统日志输出
- * - PA10：USART1_RX - 保留（暂未使用）
+ * - PA10：USART1_RX - 保留
  *
- * ESP8266通信（USART3，115200波特率，DMA模式）：
- * - PB10：USART3_TX - 发送AT指令到ESP8266
- * - PB11：USART3_RX - 接收ESP8266响应（DMA接收）
- * - PA8：ESP8266_RST - 硬件复位控制（低电平有效）
+ * 内置10M以太网（CH32V208特有）：
+ * - 使用内置PHY，需连接RJ45网口
+ * - ELED1/ELED2：以太网状态指示灯
+ * - 注意：不支持SSL/TLS，需通过HTTP代理服务器转发HTTPS请求
+ *
+ * ESP8266 WiFi（可选，USART3，115200波特率）：
+ * - PB10：USART3_TX
+ * - PB11：USART3_RX
+ * - PB12：ESP8266_RST（低电平复位）
+ *
+ * BC260 NB-IoT（可选，USART2，9600波特率）：
+ * - PA2：USART2_TX
+ * - PA3：USART2_RX
+ * - PA1：BC260_RST（低电平复位）
  *
  * 配置说明：
- * - WiFi和Webhook配置：编辑 config.env 后运行 generate_config.py
- * - 检测阈值配置：修改本文件中的 WATER_THRESHOLD_MV 宏定义
- * - 详细日志开关：修改本文件中的 DEBUG_MODE 宏定义
+ * - 网络配置：编辑 config.env 后运行 generate_config.py 生成 config.h
+ * - 检测阈值：修改 WATER_THRESHOLD_MV 宏（默认1000mV）
+ * - 调试模式：修改 DEBUG_MODE 宏（1=详细日志，0=精简日志）
+ * - 通信模块：在 config.h 中设置 ENABLE_ETHERNET/ENABLE_ESP8266/ENABLE_BC260
  */
 
 #include "debug.h"
@@ -59,14 +72,33 @@
 #include "ch32v20x_usart.h"
 #include "ch32v20x_adc.h"
 #include "ch32v20x_misc.h"
+#include "ch32v20x_tim.h"
 #include <stdbool.h>
 #include "string.h"
 #include "stdio.h"
 #include "config.h"  // 包含配置文件（WiFi和Webhook配置）
 
+#if ENABLE_ETHERNET
+#include "eth_driver.h"
+#endif
+
+// 调试信息：芯片型号检测
+#ifdef CH32V20x_D6
+    #pragma message("编译目标：CH32V203系列")
+#elif defined(CH32V20x_D8)
+    #pragma message("编译目标：CH32V203RBT")
+#elif defined(CH32V20x_D8W)
+    #pragma message("编译目标：CH32V208WBU6")
+#endif
+
 /*********************************************************************
  * 全局变量定义
  *********************************************************************/
+
+#if ENABLE_ETHERNET
+/* 调试用：TIM2中断计数器（定义在ch32v20x_it.c中） */
+extern volatile uint32_t tim2_isr_count;
+#endif
 
 /* 浸水检测相关全局变量 */
 volatile uint8_t water_status = 0;       // 当前水位状态：0=无水，1=有水
@@ -75,12 +107,42 @@ volatile uint16_t adc_value = 0;         // ADC原始转换结果（0-4095）
 volatile uint16_t voltage_mv = 0;        // 转换后的电压值（单位：毫伏）
 
 /* ESP8266通信相关全局变量 */
+#if ENABLE_ESP8266
 #define ESP_RX_BUFFER_SIZE 256           // 定义缓冲区大小为256字节
 volatile uint8_t esp_tx_buffer[ESP_RX_BUFFER_SIZE];  // ESP8266发送缓冲区
 volatile uint8_t esp_rx_buffer[ESP_RX_BUFFER_SIZE];  // ESP8266接收缓冲区（DMA使用）
 volatile uint16_t esp_rx_index = 0;                   // 接收缓冲区当前索引
 volatile uint8_t esp_response_received = 0;           // 响应接收完成标志
 volatile uint8_t esp_initialized = 0;                 // ESP8266初始化完成标志
+#endif
+
+/* BC260 NB-IoT通信相关全局变量 */
+#if ENABLE_BC260
+#define BC260_RX_BUFFER_SIZE 256           // BC260接收缓冲区大小
+volatile uint8_t BC260_rx_buffer[BC260_RX_BUFFER_SIZE];  // BC260接收缓冲区
+volatile uint16_t BC260_rx_index = 0;                    // 接收缓冲区当前索引
+volatile uint8_t BC260_response_received = 0;            // 响应接收完成标志
+volatile uint8_t BC260_initialized = 0;                  // BC260初始化完成标志
+volatile uint8_t BC260_network_attached = 0;             // 网络附着状态
+#endif
+
+/* 以太网通信相关全局变量 */
+#if ENABLE_ETHERNET
+uint8_t MACAddr[6];                                      // MAC地址
+uint8_t IPAddr[4] = ETH_IP_ADDR;                         // IP地址
+uint8_t GWIPAddr[4] = ETH_GATEWAY;                       // 网关IP地址
+uint8_t IPMask[4] = ETH_NETMASK;                         // 子网掩码
+uint8_t DNSAddr[4] = ETH_DNS_SERVER;                     // DNS服务器地址
+
+volatile uint8_t eth_initialized = 0;                    // 以太网初始化完成标志
+volatile uint8_t eth_link_status = 0;                    // 以太网链接状态
+volatile uint8_t eth_socket_connected = 0;               // Socket连接状态
+
+uint8_t eth_socket_id = 0;                               // 当前使用的socket ID
+uint16_t eth_src_port_counter = 0;                       // 源端口计数器（用于动态分配）
+uint8_t eth_socket[WCHNET_MAX_SOCKET_NUM];               // Socket数组
+uint8_t eth_recv_buf[WCHNET_MAX_SOCKET_NUM][RECE_BUF_LEN]; // Socket接收缓冲区
+#endif
 
 /*********************************************************************
  * 系统配置常量定义
@@ -118,17 +180,75 @@ uint8_t no_water_counter = 0;            // 连续检测到无水的计数
  *********************************************************************/
 
 /* ESP8266硬件复位引脚 */
-#define ESP8266_RST_PORT GPIOA           // 复位引脚端口
-#define ESP8266_RST_PIN  GPIO_Pin_1      // 复位引脚编号
+#if ENABLE_ESP8266
+#define ESP8266_RST_PORT GPIOB           // 复位引脚端口
+#define ESP8266_RST_PIN  GPIO_Pin_12     // 复位引脚编号（PB12）
+#endif
+
+/* BC260 NB-IoT硬件复位引脚 */
+#if ENABLE_BC260
+#define BC260_RST_PORT    GPIOA           // 复位引脚端口
+#define BC260_RST_PIN     GPIO_Pin_1      // 复位引脚编号（PA1）
+#endif
 
 /*********************************************************************
  * 函数声明
  *********************************************************************/
+#if ENABLE_ESP8266
 void ESP8266_RST_Control(uint8_t state);
 void ESP8266_HardReset(void);
 uint8_t ESP8266_SendCommand(char* cmd, uint32_t timeout);
 uint8_t ESP8266_Init(void);
 uint8_t ESP8266_SendWebhookAlert(char* alert_msg);
+#endif
+
+/* BC260 NB-IoT相关函数声明 */
+#if ENABLE_BC260
+void BC260_RST_Control(uint8_t state);
+void BC260_HardReset(void);
+uint8_t BC260_SendCommand(char* cmd, char* expected_resp, uint32_t timeout);
+uint8_t BC260_CheckNetworkAttach(void);
+uint8_t BC260_Init(void);
+uint8_t BC260_SendAlert(char* alert_msg);
+#endif
+
+/* 以太网相关函数声明 */
+#if ENABLE_ETHERNET
+void TIM2_Init(void);
+void ETH_HandleGlobalInt(void);
+void ETH_HandleSocketInt(uint8_t socketid, uint8_t intstat);
+uint8_t ETH_ConnectToServer(const char* host, uint16_t port);
+uint8_t ETH_SendWebhookAlert(char* alert_msg);
+void ETH_PrintMacAddr(void);
+#endif
+
+/*********************************************************************
+ * @fn      Soft_Delay_Ms
+ *
+ * @brief   软件循环延时（毫秒级）
+ *          使用CPU空循环实现，不依赖硬件定时器
+ *          适用于定时器资源被占用或中断禁用的场景
+ *
+ * @param   ms - 延时毫秒数
+ *
+ * @return  none
+ *
+ * @note    延时精度受系统时钟和编译优化影响
+ *          120MHz时钟下约12000次循环≈1ms
+ */
+static void Soft_Delay_Ms(uint32_t ms)
+{
+    volatile uint32_t i, j;
+    volatile uint32_t dummy = 0;
+    for(i = 0; i < ms; i++)
+    {
+        for(j = 0; j < 12000; j++)
+        {
+            dummy++;
+        }
+    }
+    (void)dummy;
+}
 
 /*********************************************************************
  * @fn      ADC_Function_Init
@@ -179,9 +299,10 @@ void ADC_Function_Init(void)
  *
  * @brief   初始化传感器相关的GPIO引脚
  *          PA0 - 传感器输入（模拟输入，通过ADC读取）
- *          PA1 - ESP8266 RST控制引脚（推挽输出）
+ *          PA1 - BC260 RST控制引脚（推挽输出）
  *          PB0 - LED1控制（推挽输出）
  *          PB1 - LED2控制（推挽输出）
+ *          PB12 - ESP8266 RST控制引脚（推挽输出）
  *
  * @return  none
  */
@@ -189,26 +310,70 @@ void GPIO_Init_For_Sensor(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure = {0};
 
-    // 配置PA1为推挽输出（ESP8266 RST控制）
+#if DEBUG_MODE
+    printf("[DEBUG] Starting GPIO initialization\r\n");
+    printf("[DEBUG] SystemCoreClock = %ld Hz\r\n", SystemCoreClock);
+#endif
+
+    // 确保GPIOB时钟使能 - 这是修复PB0/PB1无输出的关键
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+    
+#if DEBUG_MODE
+    printf("[DEBUG] GPIOB clock enabled\r\n");
+#endif
+
+#if ENABLE_BC260
+    // 配置PA1为推挽输出（BC260 RST控制）
+    GPIO_InitStructure.GPIO_Pin = BC260_RST_PIN;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(BC260_RST_PORT, &GPIO_InitStructure);
+#endif
+
+#if ENABLE_ESP8266
+    // 配置PB12为推挽输出（ESP8266 RST控制）
     GPIO_InitStructure.GPIO_Pin = ESP8266_RST_PIN;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_Init(ESP8266_RST_PORT, &GPIO_InitStructure);
-    
+#endif
+
     // 配置PB0和PB1为推挽输出（LED控制）
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_Init(GPIOB, &GPIO_InitStructure);
 
+#if DEBUG_MODE
+    printf("[DEBUG] GPIO initialization completed\r\n");
+    printf("[DEBUG] PB0/PB1 configured as push-pull output\r\n");
+#endif
+
     // 初始化LED状态 - 默认无水状态（LED1亮，LED2灭）
     GPIO_SetBits(GPIOB, GPIO_Pin_1);  // 熄灭LED2（PB1）
     GPIO_ResetBits(GPIOB, GPIO_Pin_0); // 点亮LED1（PB0）
     
+#if DEBUG_MODE
+    printf("[DEBUG] Initial LED state set - PB0=LOW(ON), PB1=HIGH(OFF)\r\n");
+    printf("[DEBUG] PB0 INDR=0x%04X, OUTDR=0x%04X\r\n", (unsigned int)GPIOB->INDR, (unsigned int)GPIOB->OUTDR);
+#endif
+    
+#if ENABLE_ESP8266
     // 初始化ESP8266 RST引脚为高电平（非复位状态）
     GPIO_SetBits(ESP8266_RST_PORT, ESP8266_RST_PIN);
+#endif
+
+#if ENABLE_BC260
+    // 初始化BC260 RST引脚为高电平（非复位状态）
+    GPIO_SetBits(BC260_RST_PORT, BC260_RST_PIN);
+#endif
+
+#if DEBUG_MODE
+    printf("[DEBUG] RST pins initialized\r\n");
+#endif
 }
 
+#if ENABLE_ESP8266
 /*********************************************************************
  * @fn      ESP8266_RST_Control
  *
@@ -246,6 +411,7 @@ void ESP8266_HardReset(void)
     Delay_Ms(2000);          // 等待模块重新启动
     printf("ESP8266 hard reset completed.\r\n");
 }
+#endif /* ENABLE_ESP8266 - ESP8266_RST_Control and ESP8266_HardReset */
 
 /*********************************************************************
  * @fn      USART1_Init
@@ -282,7 +448,7 @@ void USART1_Init(void)
     USART_Cmd(USART1, ENABLE);
 }
 
-
+#if ENABLE_ESP8266
 /*********************************************************************
  * @fn      USART3_Init
  *
@@ -348,84 +514,141 @@ void USART3_Init(void)
     printf("[DEBUG] DMA1_Channel3 configured for RX\r\n");
 #endif
 }
+#endif /* ENABLE_ESP8266 */
+
+#if ENABLE_BC260
+/*********************************************************************
+ * @fn      USART2_Init
+ *
+ * @brief   初始化USART2，用于与BC260 NB-IoT模块通信
+ *          PA2 - USART2_TX
+ *          PA3 - USART2_RX
+ *
+ * @return  none
+ */
+void USART2_Init(void)
+{
+    GPIO_InitTypeDef GPIO_InitStructure = {0};
+    USART_InitTypeDef USART_InitStructure = {0};
+
+    // 配置PA2为USART2_TX（复用推挽输出）
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
+    GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+    // 配置PA3为USART2_RX（浮空输入）
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+    GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+    // USART2配置 - 9600波特率，8数据位，1停止位，无校验位（8N1）
+    // BC260默认波特率为9600
+    USART_InitStructure.USART_BaudRate = 9600;
+    USART_InitStructure.USART_WordLength = USART_WordLength_8b;
+    USART_InitStructure.USART_StopBits = USART_StopBits_1;
+    USART_InitStructure.USART_Parity = USART_Parity_No;
+    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+    USART_InitStructure.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
+
+    USART_Init(USART2, &USART_InitStructure);
+
+    // 使能USART2
+    USART_Cmd(USART2, ENABLE);
+
+#if DEBUG_MODE
+    printf("[DEBUG] USART2 enabled for BC260 NB-IoT (9600 baud)\r\n");
+    printf("[DEBUG] USART2 CTLR1=0x%04X\r\n", (unsigned int)USART2->CTLR1);
+#endif
+}
+#endif /* ENABLE_BC260 */
 
 /*********************************************************************
  * @fn      ADC_Read_Voltage
  *
- * @brief   读取PA0引脚的ADC值并转换为电压值(mV)
+ * @brief   读取浸水传感器电压值
+ *          通过ADC采样PA0引脚的模拟信号
  *
  * @return  电压值(单位:mV)
+ *
+ * @note    实测ADC值与电压(mV)约为1:1关系
+ *          采样时间239.5周期，适合高阻抗信号源
  */
 uint16_t ADC_Read_Voltage(void)
 {
     uint16_t adc_val;
-    uint32_t voltage;
-    
-    // 配置ADC通道0(PA0)
+
+    // 配置ADC通道0(PA0)，使用较长采样时间保证精度
     ADC_RegularChannelConfig(ADC1, ADC_Channel_0, 1, ADC_SampleTime_239Cycles5);
     
-    // 启动ADC转换
+    // 触发软件转换
     ADC_SoftwareStartConvCmd(ADC1, ENABLE);
     
     // 等待转换完成
     while(!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC));
     
-    // 读取ADC值
+    // 读取转换结果
     adc_val = ADC_GetConversionValue(ADC1);
     
-    // 清除标志位
+    // 清除转换完成标志
     ADC_ClearFlag(ADC1, ADC_FLAG_EOC);
     
-    // 转换为电压值(单位:mV)，假设VDD为3.3V
-    // ADC值范围: 0-4095 对应 0-3300mV
-    voltage = (uint32_t)adc_val * 3300 / 4095;
-    
-    return (uint16_t)voltage;
+    // 返回电压值(mV) - ADC值与电压1:1映射
+    return adc_val;
 }
 
 /*********************************************************************
  * @fn      Sensor_Status_Check
  *
- * @brief   检查传感器状态（通过ADC读取电压值）
+ * @brief   检查浸水传感器状态
+ *          读取ADC电压值，通过去抖动算法判断浸水状态
  *
  * @return  none
+ *
+ * @note    使用双阈值+计数器去抖动：
+ *          - 电压 >= WATER_THRESHOLD_MV 且连续 WATER_CONFIRM_COUNT 次 → 确认浸水
+ *          - 电压 < NO_WATER_THRESHOLD_MV 且连续 NO_WATER_CONFIRM_COUNT 次 → 确认干燥
+ *          - 电压在中间区域 → 保持当前状态
  */
 void Sensor_Status_Check(void)
 {
-    // 读取ADC值和电压值
-    adc_value = ADC_GetConversionValue(ADC1);
+    // 读取传感器电压值
     voltage_mv = ADC_Read_Voltage();
-    
-    // 根据电压阈值判断是否有水，使用去抖动机制
+    adc_value = voltage_mv;  // ADC值与电压1:1映射
+
+    // 输出传感器状态日志
+    printf("[SENSOR] ADC: %d, Voltage: %dmV, Threshold: %dmV, Status: %s\r\n",
+           adc_value, voltage_mv, WATER_THRESHOLD_MV,
+           (voltage_mv >= WATER_THRESHOLD_MV) ? "WET" : "DRY");
+
+    // 去抖动状态机
     if(voltage_mv >= WATER_THRESHOLD_MV)
     {
-        // 增加有水计数器
+        // 检测到高电压（可能浸水）
         water_counter++;
-        no_water_counter = 0; // 重置无水计数器
-        
-        // 只有当连续多次检测到高电压时才确认为有水状态
+        no_water_counter = 0;
+
         if(water_counter >= WATER_CONFIRM_COUNT)
         {
-            water_status = 1;  // 确认为有水
-            water_counter = 0;  // 重置计数器
+            water_status = 1;  // 确认浸水
+            water_counter = 0;
         }
     }
     else if(voltage_mv < NO_WATER_THRESHOLD_MV)
     {
-        // 增加无水计数器
+        // 检测到低电压（可能干燥）
         no_water_counter++;
-        water_counter = 0; // 重置有水计数器
-        
-        // 只有当连续多次检测到低电压时才确认为无水状态
+        water_counter = 0;
+
         if(no_water_counter >= NO_WATER_CONFIRM_COUNT)
         {
-            water_status = 0;  // 确认为无水
-            no_water_counter = 0; // 重置计数器
+            water_status = 0;  // 确认干燥
+            no_water_counter = 0;
         }
     }
     else
     {
-        // 电压在中间区域时保持当前状态不变，重置两个计数器
+        // 电压在迟滞区域，保持当前状态
         water_counter = 0;
         no_water_counter = 0;
     }
@@ -435,27 +658,42 @@ void Sensor_Status_Check(void)
  * @fn      LED_Control
  *
  * @brief   根据传感器状态控制LED显示
- *          无水时：点亮PB0的LED，熄灭PB1的LED
- *          有水时：点亮PB1的LED，熄灭PB0的LED
+ *          无水时：点亮PB0的LED（LED3/绿色），熄灭PB1的LED（LED4/红色）
+ *          有水时：点亮PB1的LED（LED4/红色），熄灭PB0的LED（LED3/绿色）
  *
  * @return  none
  */
 void LED_Control(void)
 {
+    static uint8_t last_led_state = 0xFF;  // 用于检测LED状态变化
+
     if(water_status == 0)
     {
         // 无水状态
-        GPIO_ResetBits(GPIOB, GPIO_Pin_0);  // 点亮LED1（PB0）
-        GPIO_SetBits(GPIOB, GPIO_Pin_1);    // 熄灭LED2（PB1）
+        GPIO_ResetBits(GPIOB, GPIO_Pin_0);  // 点亮LED3（PB0）- 共阳极，低电平点亮
+        GPIO_SetBits(GPIOB, GPIO_Pin_1);    // 熄灭LED4（PB1）
+
+        if(last_led_state != 0)
+        {
+            printf("[LED] State: DRY - LED3(PB0)=ON(green), LED4(PB1)=OFF\r\n");
+            last_led_state = 0;
+        }
     }
     else
     {
         // 有水状态
-        GPIO_SetBits(GPIOB, GPIO_Pin_0);    // 熄灭LED1（PB0）
-        GPIO_ResetBits(GPIOB, GPIO_Pin_1);  // 点亮LED2（PB1）
+        GPIO_SetBits(GPIOB, GPIO_Pin_0);    // 熄灭LED3（PB0）
+        GPIO_ResetBits(GPIOB, GPIO_Pin_1);  // 点亮LED4（PB1）- 共阳极，低电平点亮
+
+        if(last_led_state != 1)
+        {
+            printf("[LED] State: WET - LED3(PB0)=OFF, LED4(PB1)=ON(red)\r\n");
+            last_led_state = 1;
+        }
     }
 }
 
+#if ENABLE_ESP8266
 /*********************************************************************
  * @fn      ESP8266_HardwareTest
  *
@@ -1213,9 +1451,11 @@ uint8_t ESP8266_SendWebhookAlert(char* alert_msg)
     Delay_Ms(500);
 
     // 准备 JSON body
+    char *escaped_msg = json_escape(alert_msg);
     sprintf(json_body,
-        "{\"msgtype\":\"text\",\"text\":{\"content\":\"%s\"}}",
-        alert_msg);
+            "{\"msgtype\":\"text\",\"text\":{\"content\":\"%s\"}}",
+            escaped_msg);
+    free(escaped_msg);
     
     json_len = strlen(json_body);
 
@@ -1266,33 +1506,858 @@ uint8_t ESP8266_SendWebhookAlert(char* alert_msg)
     printf("Webhook alert sent!\r\n");
     return 1;
 }
+#endif /* ENABLE_ESP8266 */
+
+#if ENABLE_BC260
+/*********************************************************************
+ * BC260 NB-IoT 模块相关函数
+ *********************************************************************/
+
+/*********************************************************************
+ * @fn      BC260_RST_Control
+ *
+ * @brief   控制BC260的RST引脚
+ *
+ * @param   state - 0表示复位(Low)，1表示正常运行(High)
+ *
+ * @return  none
+ */
+void BC260_RST_Control(uint8_t state)
+{
+    if(state)
+    {
+        GPIO_SetBits(BC260_RST_PORT, BC260_RST_PIN);  // 拉高RST引脚
+    }
+    else
+    {
+        GPIO_ResetBits(BC260_RST_PORT, BC260_RST_PIN);  // 拉低RST引脚
+    }
+}
+
+/*********************************************************************
+ * @fn      BC260_HardReset
+ *
+ * @brief   对BC260执行硬复位
+ *
+ * @return  none
+ */
+void BC260_HardReset(void)
+{
+    printf("Performing BC260 hard reset...\r\n");
+    BC260_RST_Control(0);  // 拉低RST引脚
+    Delay_Ms(200);        // 保持低电平一段时间
+    BC260_RST_Control(1);  // 拉高RST引脚
+    Delay_Ms(5000);       // 等待模块重新启动（BC260启动较慢）
+    printf("BC260 hard reset completed.\r\n");
+}
+
+/*********************************************************************
+ * @fn      BC260_SendCommand
+ *
+ * @brief   发送AT指令给BC260并等待响应
+ *
+ * @param   cmd - 要发送的命令字符串
+ * @param   expected_resp - 期望的响应字符串（如"OK"），NULL表示不检查
+ * @param   timeout - 超时时间(毫秒)
+ *
+ * @return  1-成功 0-失败
+ */
+uint8_t BC260_SendCommand(char* cmd, char* expected_resp, uint32_t timeout)
+{
+    uint32_t start_time = 0;
+    const char* p = cmd;
+
+    // 清空接收缓冲区
+    memset((void*)BC260_rx_buffer, 0, sizeof(BC260_rx_buffer));
+    BC260_rx_index = 0;
+    BC260_response_received = 0;
+
+    // 发送命令
+    printf("[BC260] Sending: %s\r\n", cmd);
+    while(*p)
+    {
+        while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+        USART_SendData(USART2, *p);
+        p++;
+    }
+
+    // 发送 \r\n
+    while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+    USART_SendData(USART2, '\r');
+    while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+    USART_SendData(USART2, '\n');
+
+    // 等待响应（轮询模式）
+    while(start_time < timeout)
+    {
+        // 检查是否有数据接收
+        if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+        {
+            uint8_t data = USART_ReceiveData(USART2);
+
+            if(BC260_rx_index < sizeof(BC260_rx_buffer) - 1)
+            {
+                BC260_rx_buffer[BC260_rx_index++] = data;
+                BC260_rx_buffer[BC260_rx_index] = '\0';
+
+                // 检查是否收到完整响应
+                if(BC260_rx_index >= 2 &&
+                   BC260_rx_buffer[BC260_rx_index-2] == '\r' &&
+                   BC260_rx_buffer[BC260_rx_index-1] == '\n')
+                {
+                    // 检查是否包含期望的响应
+                    if(expected_resp != NULL)
+                    {
+                        if(strstr((char*)BC260_rx_buffer, expected_resp))
+                        {
+                            BC260_response_received = 1;
+                            break;
+                        }
+                        // 继续等待更多数据
+                    }
+                    else
+                    {
+                        BC260_response_received = 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        Delay_Ms(1);
+        start_time++;
+    }
+
+    if(BC260_rx_index > 0)
+    {
+        printf("[BC260] Response: %s\r\n", (char*)BC260_rx_buffer);
+    }
+
+    if(expected_resp != NULL)
+    {
+        if(strstr((char*)BC260_rx_buffer, expected_resp))
+        {
+            return 1;
+        }
+        else if(strstr((char*)BC260_rx_buffer, "ERROR"))
+        {
+            printf("[BC260] ERROR response received\r\n");
+            return 0;
+        }
+    }
+
+    return BC260_response_received;
+}
+
+/*********************************************************************
+ * @fn      BC260_CheckNetworkAttach
+ *
+ * @brief   检查BC260是否已附着到移动网络
+ *
+ * @return  1-已附着 0-未附着
+ */
+uint8_t BC260_CheckNetworkAttach(void)
+{
+    printf("[BC260] Checking network attachment...\r\n");
+
+    // 发送AT+CGATT?查询网络附着状态
+    if(BC260_SendCommand("AT+CGATT?", "+CGATT:", 5000))
+    {
+        // 检查响应中是否包含"+CGATT:1"表示已附着
+        if(strstr((char*)BC260_rx_buffer, "+CGATT:1"))
+        {
+            printf("[BC260] Network attached!\r\n");
+            BC260_network_attached = 1;
+            return 1;
+        }
+        else if(strstr((char*)BC260_rx_buffer, "+CGATT:0"))
+        {
+            printf("[BC260] Network not attached yet.\r\n");
+            BC260_network_attached = 0;
+            return 0;
+        }
+    }
+
+    printf("[BC260] Failed to check network attachment.\r\n");
+    return 0;
+}
+
+/*********************************************************************
+ * @fn      BC260_Init
+ *
+ * @brief   初始化BC260 NB-IoT模块
+ *
+ * @return  1-成功 0-失败
+ */
+uint8_t BC260_Init(void)
+{
+    uint8_t retry;
+
+    printf("\r\n=== Initializing BC260 NB-IoT Module ===\r\n");
+
+    // 硬复位BC260
+    BC260_HardReset();
+
+    // 测试AT通信
+    printf("[BC260] Testing AT communication...\r\n");
+    for(retry = 0; retry < 5; retry++)
+    {
+        if(BC260_SendCommand("AT", "OK", 2000))
+        {
+            printf("[BC260] AT communication OK!\r\n");
+            break;
+        }
+        Delay_Ms(1000);
+    }
+    if(retry >= 5)
+    {
+        printf("[BC260] AT communication failed!\r\n");
+        return 0;
+    }
+
+    Delay_Ms(500);
+
+    // 关闭回显
+    BC260_SendCommand("ATE0", "OK", 2000);
+    Delay_Ms(500);
+
+    // 查询模块信息
+    BC260_SendCommand("ATI", "OK", 2000);
+    Delay_Ms(500);
+
+    // 查询IMEI
+    BC260_SendCommand("AT+CGSN=1", "OK", 2000);
+    Delay_Ms(500);
+
+    // 查询SIM卡状态
+    printf("[BC260] Checking SIM card...\r\n");
+    for(retry = 0; retry < 3; retry++)
+    {
+        if(BC260_SendCommand("AT+CIMI", "OK", 3000))
+        {
+            printf("[BC260] SIM card detected!\r\n");
+            break;
+        }
+        Delay_Ms(1000);
+    }
+    if(retry >= 3)
+    {
+        printf("[BC260] SIM card not detected!\r\n");
+        return 0;
+    }
+
+    Delay_Ms(500);
+
+    // 设置网络功能
+    // 开启射频功能
+    BC260_SendCommand("AT+CFUN=1", "OK", 5000);
+    Delay_Ms(1000);
+
+    // 自动附着网络
+    BC260_SendCommand("AT+CGATT=1", "OK", 10000);
+    Delay_Ms(2000);
+
+    // 等待网络附着（最多等待60秒）
+    printf("[BC260] Waiting for network attachment...\r\n");
+    for(retry = 0; retry < 30; retry++)
+    {
+        if(BC260_CheckNetworkAttach())
+        {
+            break;
+        }
+        Delay_Ms(2000);
+        printf("[BC260] Still waiting... (%d/30)\r\n", retry + 1);
+    }
+
+    if(!BC260_network_attached)
+    {
+        printf("[BC260] Network attachment timeout! Module may work when network available.\r\n");
+        // 不返回失败，允许后续尝试
+    }
+
+    // 查询信号强度
+    BC260_SendCommand("AT+CSQ", "OK", 2000);
+
+    BC260_initialized = 1;
+    printf("[BC260] BC260 NB-IoT module initialized!\r\n");
+
+    // 发送初始化完成消息（明确标注是BC260模块）
+    printf("[BC260] Sending initialization complete message...\r\n");
+    BC260_SendAlert("【NB-IoT系统启动】\\nBC260模块初始化完成\\n通信方式: NB-IoT\\n状态: 正常运行");
+
+    return 1;
+}
+
+/*********************************************************************
+ * @fn      BC260_SendAlert
+ *
+ * @brief   通过BC260 NB-IoT发送警报消息到企业微信Webhook
+ *          使用HTTP POST方式发送JSON数据
+ *          注意：BC260不支持HTTPS，需要通过HTTP代理或中转服务
+ *
+ * @param   alert_msg - 警报消息内容
+ *
+ * @return  1-成功 0-失败
+ */
+uint8_t BC260_SendAlert(char* alert_msg)
+{
+    // char cmd[512];  // 未使用变量，暂时注释
+    char json_body[256];
+    char http_request[768];
+    uint16_t json_len;
+    uint16_t http_len;
+
+    if(!BC260_initialized)
+    {
+        printf("[BC260] Module not initialized, skipping alert.\r\n");
+        return 0;
+    }
+
+    // 检查网络附着状态
+    if(!BC260_network_attached)
+    {
+        // 尝试重新检查网络状态
+        if(!BC260_CheckNetworkAttach())
+        {
+            printf("[BC260] Network not attached, cannot send alert.\r\n");
+            return 0;
+        }
+    }
+
+    printf("[BC260] Sending alert via HTTP: %s\r\n", alert_msg);
+
+    // 准备 JSON body（与ESP8266相同格式）
+    sprintf(json_body,
+        "{\"msgtype\":\"text\",\"text\":{\"content\":\"%s\"}}",
+        alert_msg);
+
+    json_len = strlen(json_body);
+
+    // 准备完整的 HTTP POST 请求
+    // 注意：企业微信要求HTTPS，BC260需要通过HTTP代理转发
+    // 这里先使用HTTP方式，实际部署时需要配置HTTP转HTTPS代理服务器
+    sprintf(http_request,
+        "POST /cgi-bin/webhook/send?key=%s HTTP/1.1\r\n"
+        "Host: qyapi.weixin.qq.com\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "%s",
+        WEBHOOK_KEY,
+        json_len,
+        json_body);
+
+    http_len = strlen(http_request);
+
+    printf("[BC260] HTTP request length: %d bytes\r\n", http_len);
+
+    // 使用BC260的TCP连接发送HTTP请求
+    // 创建TCP socket
+    if(!BC260_SendCommand("AT+NSOCR=STREAM,6,0,1", "OK", 5000))
+    {
+        printf("[BC260] Failed to create TCP socket!\r\n");
+        return 0;
+    }
+
+    Delay_Ms(500);
+
+    // 连接到服务器（企业微信需要HTTPS，这里尝试HTTP端口80）
+    // 注意：实际使用需要配置HTTP代理服务器地址
+    // 企业微信API服务器IP可能会变化，建议使用代理服务
+    // 示例使用: AT+NSOCO=0,<server_ip>,<port>
+    printf("[BC260] Note: WeChat Work requires HTTPS. Please configure an HTTP proxy server.\r\n");
+    printf("[BC260] Current implementation is for demonstration purposes.\r\n");
+
+    // 由于企业微信需要HTTPS而BC260标准固件不支持SSL
+    // 这里提供框架代码，实际部署需要：
+    // 1. 使用支持SSL的BC260固件
+    // 2. 或部署HTTP转HTTPS代理服务器
+    // 3. 或使用其他支持HTTP的IoT平台
+
+    // 以下为示例代码框架（需要配置代理服务器IP和端口）
+    /*
+    // 连接代理服务器
+    sprintf(cmd, "AT+NSOCO=0,%s,%d", "代理服务器IP", 代理端口);
+    if(!BC260_SendCommand(cmd, "OK", 10000))
+    {
+        printf("[BC260] Failed to connect to server!\r\n");
+        BC260_SendCommand("AT+NSOCL=0", "OK", 2000);
+        return 0;
+    }
+
+    Delay_Ms(500);
+
+    // 将HTTP请求转换为十六进制字符串
+    char hex_data[1536];
+    for(int i = 0; i < http_len; i++)
+    {
+        sprintf(&hex_data[i*2], "%02X", (uint8_t)http_request[i]);
+    }
+    hex_data[http_len*2] = '\0';
+
+    // 发送数据
+    sprintf(cmd, "AT+NSOSD=0,%d,%s", http_len, hex_data);
+    if(!BC260_SendCommand(cmd, "OK", 10000))
+    {
+        printf("[BC260] Failed to send HTTP request!\r\n");
+        BC260_SendCommand("AT+NSOCL=0", "OK", 2000);
+        return 0;
+    }
+
+    Delay_Ms(2000);
+    */
+
+    // 关闭socket
+    BC260_SendCommand("AT+NSOCL=0", "OK", 2000);
+
+    printf("[BC260] Alert message prepared: %s\r\n", alert_msg);
+    printf("[BC260] To enable actual sending, configure HTTP proxy or use SSL-capable firmware.\r\n");
+    return 1;
+}
+#endif /* ENABLE_BC260 */
+
+#if ENABLE_ETHERNET
+/*********************************************************************
+ * 以太网模块相关函数
+ *********************************************************************/
+
+/*********************************************************************
+ * @fn      TIM2_Init
+ *
+ * @brief   初始化TIM2定时器（用于WCHNET协议栈定时）
+ *          配置为10ms周期的向上计数模式
+ *
+ * @return  none
+ *
+ * @note    当前使用轮询模式而非中断模式
+ *          在主循环中手动调用WCHNET_TimeIsr()更新网络定时
+ *          这样可避免中断与其他外设的冲突
+ */
+void TIM2_Init(void)
+{
+    TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure = {0};
+
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+
+    // 配置定时器参数：周期=10ms (WCHNETTIMERPERIOD=10)
+    TIM_TimeBaseStructure.TIM_Period = SystemCoreClock / 1000000;
+    TIM_TimeBaseStructure.TIM_Prescaler = WCHNETTIMERPERIOD * 1000 - 1;
+    TIM_TimeBaseStructure.TIM_ClockDivision = 0;
+    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
+
+    TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
+
+    // 注意：TIM2中断已禁用，使用主循环轮询方式调用WCHNET_TimeIsr()
+    // 如需启用中断模式，取消以下注释：
+    // TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE);
+    // NVIC_EnableIRQ(TIM2_IRQn);
+
+    TIM_Cmd(TIM2, ENABLE);
+}
+
+/*********************************************************************
+ * @fn      ETH_PrintMacAddr
+ *
+ * @brief   打印MAC地址到调试串口
+ *
+ * @return  none
+ */
+void ETH_PrintMacAddr(void)
+{
+    printf("MAC Address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+           MACAddr[0], MACAddr[1], MACAddr[2],
+           MACAddr[3], MACAddr[4], MACAddr[5]);
+}
+
+/*********************************************************************
+ * @fn      ETH_HandleSocketInt
+ *
+ * @brief   处理Socket中断
+ *
+ * @param   socketid - socket id
+ * @param   intstat - 中断状态
+ *
+ * @return  none
+ */
+void ETH_HandleSocketInt(uint8_t socketid, uint8_t intstat)
+{
+    if(intstat & SINT_STAT_RECV)    // 接收到数据
+    {
+        uint32_t len = WCHNET_SocketRecvLen(socketid, NULL);
+        printf("[ETH] Socket %d received %lu bytes\r\n", socketid, (unsigned long)len);
+
+        // 读取并丢弃接收的数据（HTTP响应）
+        if(len > 0)
+        {
+            WCHNET_SocketRecv(socketid, NULL, &len);
+        }
+    }
+    if(intstat & SINT_STAT_CONNECT)  // 连接成功
+    {
+        WCHNET_ModifyRecvBuf(socketid, (uint32_t)eth_recv_buf[socketid], RECE_BUF_LEN);
+        eth_socket_connected = 1;
+        printf("[ETH] Socket %d connected successfully\r\n", socketid);
+    }
+    if(intstat & SINT_STAT_DISCONNECT)  // 断开连接
+    {
+        eth_socket_connected = 0;
+        printf("[ETH] Socket %d disconnected\r\n", socketid);
+    }
+    if(intstat & SINT_STAT_TIM_OUT)  // 超时
+    {
+        eth_socket_connected = 0;
+        printf("[ETH] Socket %d timeout\r\n", socketid);
+    }
+}
+
+/*********************************************************************
+ * @fn      ETH_HandleGlobalInt
+ *
+ * @brief   处理全局以太网中断
+ *
+ * @return  none
+ */
+void ETH_HandleGlobalInt(void)
+{
+    uint8_t intstat;
+    uint8_t i;
+    uint8_t socketint;
+
+    intstat = WCHNET_GetGlobalInt();
+
+    if(intstat & GINT_STAT_UNREACH)
+    {
+        printf("[ETH] Unreachable interrupt\r\n");
+    }
+    if(intstat & GINT_STAT_IP_CONFLI)
+    {
+        printf("[ETH] IP conflict detected!\r\n");
+    }
+    if(intstat & GINT_STAT_PHY_CHANGE)
+    {
+        uint8_t phy_stat = WCHNET_GetPHYStatus();
+        if(phy_stat & PHY_Linked_Status)
+        {
+            eth_link_status = 1;
+            printf("[ETH] PHY Link Up\r\n");
+        }
+        else
+        {
+            eth_link_status = 0;
+            printf("[ETH] PHY Link Down\r\n");
+        }
+    }
+    if(intstat & GINT_STAT_SOCKET)
+    {
+        for(i = 0; i < WCHNET_MAX_SOCKET_NUM; i++)
+        {
+            socketint = WCHNET_GetSocketInt(i);
+            if(socketint)
+            {
+                ETH_HandleSocketInt(i, socketint);
+            }
+        }
+    }
+}
+
+/*********************************************************************
+ * @fn      ETH_SendWebhookAlert
+ *
+ * @brief   通过以太网发送企业微信Webhook警报消息
+ *
+ * @param   alert_msg - 警报消息内容（UTF-8编码）
+ *
+ * @return  1-发送成功 0-发送失败
+ *
+ * @note    CH32V208内置10M以太网不支持SSL/TLS
+ *          需要通过HTTP代理服务器转发到企业微信HTTPS接口
+ *          代理服务器地址在config.h中配置(HTTP_PROXY_IP/PORT)
+ */
+uint8_t ETH_SendWebhookAlert(char* alert_msg)
+{
+    char json_body[256];
+    char http_request[768];
+    uint16_t json_len;
+    uint32_t http_len;
+    uint8_t ret;
+    SOCK_INF TmpSocketInf;
+    uint8_t socket_id = 0;
+    uint32_t timeout;
+
+    if(!eth_initialized)
+    {
+        printf("[ETH] Ethernet not initialized, skipping webhook alert.\r\n");
+        return 0;
+    }
+
+    if(!eth_link_status)
+    {
+        printf("[ETH] Ethernet link down, cannot send alert.\r\n");
+        return 0;
+    }
+
+    printf("[ETH] Sending webhook alert: %s\r\n", alert_msg);
+
+    // 准备JSON body
+    sprintf(json_body,
+        "{\"msgtype\":\"text\",\"text\":{\"content\":\"%s\"}}",
+        alert_msg);
+    json_len = strlen(json_body);
+
+    // 准备HTTP POST请求
+    // 注意：企业微信需要HTTPS，此处为HTTP请求格式
+    // 实际部署需要配置HTTP转HTTPS代理服务器
+    sprintf(http_request,
+        "POST /cgi-bin/webhook/send?key=%s HTTP/1.1\r\n"
+        "Host: qyapi.weixin.qq.com\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "%s",
+        WEBHOOK_KEY,
+        json_len,
+        json_body);
+
+    http_len = strlen(http_request);
+
+    printf("[ETH] HTTP request length: %lu bytes\r\n", (unsigned long)http_len);
+
+    // 使用配置的HTTP代理服务器来转发HTTPS请求
+    // CH32V208内置10M以太网不支持SSL，需要代理服务器转发到企业微信HTTPS接口
+    uint8_t proxy_ip[4] = HTTP_PROXY_IP;
+    printf("[ETH] Connecting to HTTP proxy: %d.%d.%d.%d:%d\r\n",
+           proxy_ip[0], proxy_ip[1], proxy_ip[2], proxy_ip[3], HTTP_PROXY_PORT);
+
+    // 创建TCP Socket连接到代理服务器
+    memset(&TmpSocketInf, 0, sizeof(SOCK_INF));
+    TmpSocketInf.IPAddr[0] = proxy_ip[0];
+    TmpSocketInf.IPAddr[1] = proxy_ip[1];
+    TmpSocketInf.IPAddr[2] = proxy_ip[2];
+    TmpSocketInf.IPAddr[3] = proxy_ip[3];
+    TmpSocketInf.DesPort = HTTP_PROXY_PORT;  // 代理服务器端口
+    TmpSocketInf.SourPort = 10000 + (eth_src_port_counter++ % 1000);  // 动态源端口
+    TmpSocketInf.ProtoType = PROTO_TYPE_TCP;
+    TmpSocketInf.RecvBufLen = RECE_BUF_LEN;
+
+    ret = WCHNET_SocketCreat(&socket_id, &TmpSocketInf);
+    if(ret != WCHNET_ERR_SUCCESS)
+    {
+        printf("[ETH] Failed to create socket: 0x%02X\r\n", ret);
+        return 0;
+    }
+
+    printf("[ETH] Socket %d created, connecting...\r\n", socket_id);
+
+    eth_socket_connected = 0;
+    ret = WCHNET_SocketConnect(socket_id);
+    if(ret != WCHNET_ERR_SUCCESS)
+    {
+        printf("[ETH] Failed to initiate connection: 0x%02X\r\n", ret);
+        WCHNET_SocketClose(socket_id, TCP_CLOSE_ABANDON);
+        return 0;
+    }
+
+    // 等待连接建立
+    timeout = 0;
+    while(!eth_socket_connected && timeout < 5000)
+    {
+        // 轮询以太网硬件（因为ETH中断已禁用）
+        WCHNET_ETHIsr();
+        WCHNET_MainTask();
+        if(WCHNET_QueryGlobalInt())
+        {
+            ETH_HandleGlobalInt();
+        }
+        // 更新网络定时器
+        WCHNET_TimeIsr(WCHNETTIMERPERIOD);
+        Soft_Delay_Ms(10);
+        timeout += 10;
+    }
+
+    if(!eth_socket_connected)
+    {
+        printf("[ETH] Connection timeout!\r\n");
+        WCHNET_SocketClose(socket_id, TCP_CLOSE_ABANDON);
+        return 0;
+    }
+
+    // 发送HTTP请求
+    ret = WCHNET_SocketSend(socket_id, (uint8_t*)http_request, &http_len);
+    if(ret != WCHNET_ERR_SUCCESS)
+    {
+        printf("[ETH] Failed to send HTTP request: 0x%02X\r\n", ret);
+        WCHNET_SocketClose(socket_id, TCP_CLOSE_NORMAL);
+        return 0;
+    }
+
+    printf("[ETH] HTTP request sent, %lu bytes\r\n", (unsigned long)http_len);
+
+    // 等待响应（使用循环轮询）
+    timeout = 0;
+    while(timeout < 2000)
+    {
+        WCHNET_ETHIsr();
+        WCHNET_MainTask();
+        if(WCHNET_QueryGlobalInt())
+        {
+            ETH_HandleGlobalInt();
+        }
+        WCHNET_TimeIsr(WCHNETTIMERPERIOD);
+        Soft_Delay_Ms(10);
+        timeout += 10;
+    }
+
+    // 关闭连接
+    WCHNET_SocketClose(socket_id, TCP_CLOSE_NORMAL);
+
+    printf("[ETH] Webhook alert sent!\r\n");
+    return 1;
+}
+
+/*********************************************************************
+ * @fn      ETH_ModuleInit
+ *
+ * @brief   初始化以太网模块
+ *
+ * @return  1-成功 0-失败
+ */
+uint8_t ETH_ModuleInit(void)
+{
+    uint8_t ret;
+    uint8_t i;
+
+    printf("\r\n=== Initializing Ethernet Module ===\r\n");
+
+    // 检查系统时钟
+    if((SystemCoreClock != 60000000) && (SystemCoreClock != 120000000))
+    {
+        printf("[ETH] Warning: Ethernet requires 60MHz or 120MHz clock!\r\n");
+        printf("[ETH] Current clock: %lu Hz\r\n", (unsigned long)SystemCoreClock);
+    }
+
+    // 获取MAC地址
+    WCHNET_GetMacAddr(MACAddr);
+    ETH_PrintMacAddr();
+
+    // 打印网络库版本
+    printf("[ETH] WCHNET Library Version: 0x%02X\r\n", WCHNET_GetVer());
+
+    // 打印网络配置
+    printf("[ETH] IP Address:  %d.%d.%d.%d\r\n",
+           IPAddr[0], IPAddr[1], IPAddr[2], IPAddr[3]);
+    printf("[ETH] Gateway:     %d.%d.%d.%d\r\n",
+           GWIPAddr[0], GWIPAddr[1], GWIPAddr[2], GWIPAddr[3]);
+    printf("[ETH] Subnet Mask: %d.%d.%d.%d\r\n",
+           IPMask[0], IPMask[1], IPMask[2], IPMask[3]);
+    printf("[ETH] DNS Server:  %d.%d.%d.%d\r\n",
+           DNSAddr[0], DNSAddr[1], DNSAddr[2], DNSAddr[3]);
+
+    // 初始化以太网库（必须在定时器之前）
+    printf("[ETH] Initializing library...\r\n");
+    ret = ETH_LibInit(IPAddr, GWIPAddr, IPMask, MACAddr);
+    if(ret != WCHNET_ERR_SUCCESS)
+    {
+        printf("[ETH] Library init failed: 0x%02X\r\n", ret);
+        return 0;
+    }
+    printf("[ETH] Library initialized successfully\r\n");
+
+    // 初始化定时器（用于协议栈定时）- 必须在库初始化之后
+    printf("[ETH] Initializing TIM2 for WCHNET...\r\n");
+    TIM2_Init();
+    printf("[ETH] TIM2 initialized\r\n");
+
+    // 初始化socket数组
+    memset(eth_socket, 0xff, WCHNET_MAX_SOCKET_NUM);
+
+    // 等待PHY链接
+    printf("[ETH] Waiting for PHY link...");
+
+    for(i = 0; i < 50; i++)  // 最多等待5秒
+    {
+        WCHNET_MainTask();
+        if(WCHNET_QueryGlobalInt())
+        {
+            ETH_HandleGlobalInt();
+        }
+
+        if(eth_link_status)
+        {
+            printf("OK!\r\n");
+            printf("[ETH] PHY link established!\r\n");
+            break;
+        }
+
+        // 简单延时约100ms
+        {
+            volatile uint32_t d;
+            for(d = 0; d < 1200000; d++);
+        }
+    }
+
+    if(i >= 50)
+    {
+        printf("[ETH] Warning: PHY link not established. Check cable connection.\r\n");
+    }
+
+    eth_initialized = 1;
+    printf("[ETH] Ethernet module initialized successfully!\r\n");
+    printf("=== Ethernet Initialization Complete ===\r\n\r\n");
+
+    return 1;
+}
+#endif /* ENABLE_ETHERNET */
 
 /*********************************************************************
  * @fn      USART_Report_Status
  *
  * @brief   通过串口报告当前水位状态和电压值
+ *          同时通过ESP8266 WiFi、BC260 NB-IoT或以太网发送警报
  *
  * @return  none
  */
 void USART_Report_Status(void)
 {
     static uint8_t webhook_sent = 0;  // 记录是否已发送过webhook
-    
+    static uint8_t nbiot_sent = 0;    // 记录是否已通过NB-IoT发送
+    static uint8_t eth_sent = 0;      // 记录是否已通过以太网发送
+
     if(water_status != last_water_status)
     {
         // 状态发生变化才输出
         if(water_status == 0)
         {
-            printf("Water Status: No Water Detected, Voltage: %dmV\r\n", voltage_mv);
+            printf("Water Status: No Water Detected, Voltage: %umV\r\n", voltage_mv);
             
             // 如果之前是有水状态，现在变为无水状态，则发送恢复通知
-            if(last_water_status == 1 && webhook_sent)
+            if(last_water_status == 1 && (webhook_sent || nbiot_sent || eth_sent))
             {
                 char alert_msg[100];
                 sprintf(alert_msg, "【解除警报】浸水情况已解除，当前电压：%dmV", voltage_mv);
+
+#if ENABLE_ESP8266
+                // 通过ESP8266 WiFi发送
                 if(ESP8266_SendWebhookAlert(alert_msg)) {
                     webhook_sent = 0;  // 重置标记
                 }
+#endif
+
+#if ENABLE_BC260
+                // 通过BC260 NB-IoT发送
+                if(BC260_SendAlert(alert_msg)) {
+                    nbiot_sent = 0;  // 重置标记
+                }
+#endif
+
+#if ENABLE_ETHERNET
+                // 通过以太网发送
+                if(ETH_SendWebhookAlert(alert_msg)) {
+                    eth_sent = 0;  // 重置标记
+                }
+#endif
             }
         }
         else
@@ -1302,9 +2367,27 @@ void USART_Report_Status(void)
             // 发送警报通知
             char alert_msg[100];
             sprintf(alert_msg, "【严重警报】检测到浸水情况！当前电压：%dmV", voltage_mv);
+
+#if ENABLE_ESP8266
+            // 通过ESP8266 WiFi发送
             if(ESP8266_SendWebhookAlert(alert_msg)) {
                 webhook_sent = 1;  // 标记已发送
             }
+#endif
+
+#if ENABLE_BC260
+            // 通过BC260 NB-IoT发送
+            if(BC260_SendAlert(alert_msg)) {
+                nbiot_sent = 1;  // 标记已发送
+            }
+#endif
+
+#if ENABLE_ETHERNET
+            // 通过以太网发送
+            if(ETH_SendWebhookAlert(alert_msg)) {
+                eth_sent = 1;  // 标记已发送
+            }
+#endif
         }
         last_water_status = water_status;
     }
@@ -1337,32 +2420,70 @@ int main(void)
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
     SystemCoreClockUpdate();
     Delay_Init();
-    
+
+    // 【重要】必须先初始化串口，再调用printf，否则程序会死锁
     // 初始化串口打印功能（根据配置选择SDI或USART）
 #if (SDI_PRINT == SDI_PR_TRUE)
     SDI_Printf_Enable();  // 启用SDI打印
+#else
+    USART_Printf_Init(115200);  // 初始化串口并支持printf输出
+#endif
+
+#if DEBUG_MODE
+    // 现在可以安全使用printf了
+    printf("\r\n===== EARLY BOOT DEBUG =====\r\n");
+    printf("[BOOT] Reset occurred, entering main()\r\n");
+    printf("[BOOT] Chip: CH32V208WBU6\r\n");
+    printf("[BOOT] Compile: %s %s\r\n", __DATE__, __TIME__);
+    printf("[DEBUG] NVIC configured, SystemCoreClock updated\r\n");
+    printf("[DEBUG] SystemCoreClock = %ld Hz\r\n", SystemCoreClock);
+    printf("[DEBUG] HSE_VALUE = %ld Hz\r\n", HSE_VALUE);
+    printf("[DEBUG] Delay_Init() completed\r\n");
+#endif
+    
+    // 调试信息：打印芯片信息和系统时钟
+    printf("\r\n=== 系统启动信息 ===\r\n");
+    printf("芯片型号: CH32V208WBU6\r\n");
+    printf("系统时钟: %ld Hz\r\n", SystemCoreClock);
+    printf("HSE_VALUE: %ld Hz\r\n", HSE_VALUE);
+    printf("编译时间: %s %s\r\n", __DATE__, __TIME__);
+#ifdef CH32V20x_D8W
+    printf("芯片系列: CH32V208 (D8W)\r\n");
+#elif defined(CH32V20x_D8)
+    printf("芯片系列: CH32V203 (D8)\r\n");
+#elif defined(CH32V20x_D6)
+    printf("芯片系列: CH32V203 (D6)\r\n");
+#endif
+    printf("=====================\r\n\r\n");
+    
+    // 串口已在main()开头初始化，这里只打印确认信息
+#if (SDI_PRINT == SDI_PR_TRUE)
     printf("System Clock: %ld Hz\r\n", SystemCoreClock);
     printf("SDI Print Enabled\r\n");
 #else
-    USART_Printf_Init(115200);  // 初始化串口并支持printf输出
     printf("System Clock: %ld Hz\r\n", SystemCoreClock);
     printf("USART Print Enabled\r\n");
 #endif
 
     // 统一使能所有外设时钟（包括DMA）
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_USART1, ENABLE);
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART3, ENABLE);  // 只需要 USART3
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART2 | RCC_APB1Periph_USART3, ENABLE);  // USART2用于BC260，USART3用于ESP8266
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);  // 使能DMA1时钟
 
 #if DEBUG_MODE
     printf("[DEBUG] Peripheral clocks enabled (including DMA1)\r\n");
 #endif
     
-    // 初始化GPIO、ADC、USART1和USART3
+    // 初始化GPIO、ADC、USART1、USART2和USART3
     GPIO_Init_For_Sensor();
     ADC_Function_Init();
     USART1_Init();
-    USART3_Init();  // 在全局中断使能前配置USART3
+#if ENABLE_BC260
+    USART2_Init();  // BC260 NB-IoT通信
+#endif
+#if ENABLE_ESP8266
+    USART3_Init();  // ESP8266 WiFi通信
+#endif
 
 #if DEBUG_MODE
     printf("[DEBUG] All peripherals initialized\r\n");
@@ -1389,6 +2510,7 @@ int main(void)
            (unsigned int)USART3->STATR, (unsigned int)USART3->CTLR1);
 #endif
 
+#if ENABLE_ESP8266
     // 增加上电延时，确保ESP8266完全启动
     printf("Waiting for ESP8266 to initialize...\r\n");
     Delay_Ms(3000); // 3秒延时
@@ -1433,9 +2555,92 @@ int main(void)
     {
         printf("Failed to initialize ESP8266 WiFi module! Continuing without WiFi.\r\n");
     }
+#else
+    // ESP8266未启用
+    printf("\r\n=== Water Immersion Detection System Started ===\r\n");
+    printf("Water detection threshold: %dmV\r\n", WATER_THRESHOLD_MV);
+    printf("ESP8266 WiFi module: DISABLED\r\n");
+#endif
+
+#if ENABLE_BC260
+    // 初始化BC260 NB-IoT模块
+    printf("\r\nAttempting to initialize BC260 NB-IoT module...\r\n");
+    if(BC260_Init())
+    {
+        printf("BC260 NB-IoT module initialized successfully!\r\n");
+    }
+    else
+    {
+        printf("Failed to initialize BC260 NB-IoT module! Continuing without NB-IoT.\r\n");
+    }
+#else
+    printf("BC260 NB-IoT module: DISABLED\r\n");
+#endif
+
+#if ENABLE_ETHERNET
+    // 初始化以太网模块
+    printf("\r\nAttempting to initialize Ethernet module...\r\n");
+    if(ETH_ModuleInit())
+    {
+        printf("Ethernet module initialized successfully!\r\n");
+
+        // 等待PHY链接建立后再发送启动通知
+        if(!eth_link_status)
+        {
+            printf("Waiting for PHY link before sending startup notification...\r\n");
+            uint32_t link_wait = 0;
+            while(!eth_link_status && link_wait < 3000)  // 最多等待3秒
+            {
+                WCHNET_ETHIsr();
+                WCHNET_MainTask();
+                if(WCHNET_QueryGlobalInt())
+                {
+                    ETH_HandleGlobalInt();
+                }
+                Soft_Delay_Ms(100);
+                link_wait += 100;
+            }
+        }
+
+        if(eth_link_status)
+        {
+            // 发送系统启动通知
+            printf("Sending system startup notification via Ethernet...\r\n");
+            char startup_msg[256];
+            sprintf(startup_msg,
+                    "【系统启动】\n"
+                    "浸水检测系统已成功启动\n"
+                    "IP: %d.%d.%d.%d\n"
+                    "检测阈值: %dmV\n"
+                    "状态: 正常运行",
+                    IPAddr[0], IPAddr[1], IPAddr[2], IPAddr[3],
+                    WATER_THRESHOLD_MV);
+
+            if(ETH_SendWebhookAlert(startup_msg))
+            {
+                printf("Startup notification sent successfully!\r\n");
+            }
+            else
+            {
+                printf("Failed to send startup notification.\r\n");
+            }
+        }
+        else
+        {
+            printf("PHY link not available, skipping startup notification.\r\n");
+        }
+    }
+    else
+    {
+        printf("Failed to initialize Ethernet module! Continuing without Ethernet.\r\n");
+    }
+#else
+    printf("Ethernet module: DISABLED\r\n");
+#endif
 
     // 主循环
-    printf("Entering main loop...\r\n");
+    printf("\r\nEntering main loop...\r\n");
+#if ENABLE_ESP8266
     printf("\r\n=== Interactive Test Mode ===\r\n");
     printf("Type 2 characters to send as command to ESP8266\r\n");
     printf("For example: type 'AT' to send 'AT\\r\\n'\r\n");
@@ -1444,9 +2649,11 @@ int main(void)
 
     char test_buffer[128];
     uint8_t test_index = 0;
+#endif
 
     while(1)
     {
+#if ENABLE_ESP8266
         // 检查 USART1 是否有输入
         if(USART_GetFlagStatus(USART1, USART_FLAG_RXNE) != RESET)
         {
@@ -1562,21 +2769,64 @@ send_command:
 
             test_index = 0;
         }
+#endif /* ENABLE_ESP8266 */
 
-        // 原有的传感器检测（每秒一次）
+#if ENABLE_ETHERNET
+        /* ========== 以太网任务处理（轮询模式） ========== */
+
+        // 处理网络协议栈主任务
+        WCHNET_MainTask();
+        if(WCHNET_QueryGlobalInt())
+        {
+            ETH_HandleGlobalInt();
+        }
+
+        // 更新网络定时器（替代TIM2中断）
+        // time_counter每10次循环重置，不会溢出
+        {
+            static uint32_t time_counter = 0;
+            if(++time_counter >= 10)  // 每10ms调用一次
+            {
+                WCHNET_TimeIsr(WCHNETTIMERPERIOD);
+                time_counter = 0;
+            }
+        }
+
+        // 轮询以太网硬件状态（替代ETH中断）
+        WCHNET_ETHIsr();
+#endif
+
+        /* ========== 传感器检测任务（每秒一次） ========== */
         static uint32_t last_sensor_check = 0;
         static uint32_t global_timer = 0;
+        static uint32_t heartbeat_counter = 0;
+
+        // global_timer自增，使用无符号整数的自然溢出特性
+        // 差值比较 (global_timer - last_sensor_check) 在溢出时仍然正确
         global_timer++;
 
         if(global_timer - last_sensor_check >= 1000)
         {
-            Sensor_Status_Check();
-            LED_Control();
-            USART_Report_Status();
+            // heartbeat_counter溢出后自动归零，不影响功能
+            heartbeat_counter++;
+
+            printf("[LOOP %lu] Checking sensor...\r\n", (unsigned long)heartbeat_counter);
+
+            Sensor_Status_Check();   // 读取ADC电压值
+            LED_Control();           // 更新LED状态
+            USART_Report_Status();   // 处理状态变化和Webhook推送
             last_sensor_check = global_timer;
+            
+#if DEBUG_MODE
+            printf("[HEARTBEAT %lu] LED3(PB0): %s, LED4(PB1): %s\r\n",
+                   (unsigned long)heartbeat_counter,
+                   (GPIOB->OUTDR & GPIO_Pin_0) ? "OFF" : "ON",
+                   (GPIOB->OUTDR & GPIO_Pin_1) ? "OFF" : "ON");
+#endif
         }
 
-        Delay_Ms(1);
+        // 主循环延时（约1ms）
+        Soft_Delay_Ms(10);
     }
 }
 

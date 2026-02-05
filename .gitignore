@@ -111,3 +111,5 @@ cmake_install.cmake
 # Exception: Force include ESP8266 firmware files
 !ESP8266-Firmware/
 !ESP8266-Firmware/*.*
+!tools/
+!tools/*.*

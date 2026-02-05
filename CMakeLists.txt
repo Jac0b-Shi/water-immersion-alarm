@@ -166,7 +166,7 @@ file(GLOB_RECURSE SOURCES
         "FreeRTOS/portable/MemMang/heap_4.c"
         "FreeRTOS/portable/GCC/RISC-V/portASM.S"
         "Peripheral/src/*.c"
-        "Startup/startup_ch32v20x_D6.S"
+        "Startup/startup_ch32v20x_D8W.S"
 )
 list(REMOVE_ITEM SOURCES ${CMAKE_SOURCE_DIR}/FreeRTOS/portable/Common/mpu_wrappers.c)
 
@@ -191,8 +191,8 @@ add_link_options(-T ${LINKER_SCRIPT})
 # 编译可执行文件
 add_executable(${PROJECT_NAME}.elf ${SOURCES} ${LINKER_SCRIPT})
 
-# 链接静态库
-# target_link_libraries(${PROJECT_NAME}.elf printfloat)
+# 链接网络协议栈静态库
+target_link_libraries(${PROJECT_NAME}.elf ${CMAKE_SOURCE_DIR}/User/libwchnet.a)
 
 # 设置输出文件的变量
 set(HEX_FILE ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.hex)
