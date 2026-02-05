@@ -2826,7 +2826,7 @@ send_command:
         }
 
         // 主循环延时（约1ms）
-        Soft_Delay_Ms(10);
+        Soft_Delay_Ms(1);
     }
 }
 
