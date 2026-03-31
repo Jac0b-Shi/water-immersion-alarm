@@ -125,11 +125,23 @@ def generate_header(config, output_file):
 /* DNS服务器地址 */
 #define ETH_DNS_SERVER  {{ {ip_to_array(config.get('ETH_DNS_SERVER', '8.8.8.8'))} }}
 
-/* HTTP代理服务器配置（用于转发HTTPS请求到企业微信） */
+/* HTTP代理服务器配置（内网，用于转发HTTPS请求到企业微信） */
 #define HTTP_PROXY_IP   {{ {ip_to_array(config.get('HTTP_PROXY_IP', '192.168.1.1'))} }}
 #define HTTP_PROXY_PORT {config.get('HTTP_PROXY_PORT', '8080')}
 
 #endif /* ENABLE_ETHERNET */
+
+/* ========================================
+ * BC260 NB-IoT配置 (仅在ENABLE_BC260=1时有效)
+ * ======================================== */
+#if ENABLE_BC260
+
+/* BC260 HTTP代理服务器配置（公网，用于转发HTTPS请求到企业微信） */
+/* 注意：BC260通过移动网络访问公网，需要部署在公网的代理服务器 */
+#define BC260_PROXY_IP   {{ {ip_to_array(config.get('BC260_PROXY_IP', '0.0.0.0'))} }}
+#define BC260_PROXY_PORT {config.get('BC260_PROXY_PORT', '8080')}
+
+#endif /* ENABLE_BC260 */
 
 #endif /* __CONFIG_H */
 '''
@@ -137,7 +149,7 @@ def generate_header(config, output_file):
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(header_content)
 
-    print(f"✓ 配置文件已生成: {output_file}")
+    print(f"[OK] 配置文件已生成: {output_file}")
 
 def main():
     # 确定路径

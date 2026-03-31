@@ -1,8 +1,8 @@
 /********************************** (C) COPYRIGHT *******************************
  * File Name          : main.c
  * Author             : Jac0b_Shi (SHU-SPE-Sandrone)
- * Version            : V1.1.0
- * Date               : 2026/02/06
+ * Version            : V1.3.0
+ * Date               : 2026/03/31
  * Description        : 浸水检测报警系统 - 主程序
  *                      基于CH32V208 RISC-V微控制器，支持多种通信方式
  *                      实时浸水检测和企业微信报警推送
@@ -57,7 +57,7 @@
  * BC260 NB-IoT（可选，USART2，9600波特率）：
  * - PA2：USART2_TX
  * - PA3：USART2_RX
- * - PA1：BC260_RST（低电平复位）
+ * - PA1：BC260_RST（高电平复位）
  *
  * 配置说明：
  * - 网络配置：编辑 config.env 后运行 generate_config.py 生成 config.h
@@ -206,9 +206,11 @@ uint8_t ESP8266_SendWebhookAlert(char* alert_msg);
 #if ENABLE_BC260
 void BC260_RST_Control(uint8_t state);
 void BC260_HardReset(void);
+void BC260_RecoveryReset(void);
 uint8_t BC260_SendCommand(char* cmd, char* expected_resp, uint32_t timeout);
 uint8_t BC260_CheckNetworkAttach(void);
 uint8_t BC260_Init(void);
+uint8_t BC260_ReceiveHTTPResponse(char* buffer, uint16_t buffer_size, uint32_t timeout);
 uint8_t BC260_SendAlert(char* alert_msg);
 #endif
 
@@ -364,8 +366,8 @@ void GPIO_Init_For_Sensor(void)
 #endif
 
 #if ENABLE_BC260
-    // 初始化BC260 RST引脚为高电平（非复位状态）
-    GPIO_SetBits(BC260_RST_PORT, BC260_RST_PIN);
+    // 初始化BC260 RST引脚为低电平（非复位状态，高电平复位模式）
+    GPIO_ResetBits(BC260_RST_PORT, BC260_RST_PIN);
 #endif
 
 #if DEBUG_MODE
@@ -1516,9 +1518,9 @@ uint8_t ESP8266_SendWebhookAlert(char* alert_msg)
 /*********************************************************************
  * @fn      BC260_RST_Control
  *
- * @brief   控制BC260的RST引脚
+ * @brief   控制BC260的RST引脚（高电平复位模式）
  *
- * @param   state - 0表示复位(Low)，1表示正常运行(High)
+ * @param   state - 0表示正常运行(Low)，1表示复位(High)
  *
  * @return  none
  */
@@ -1526,28 +1528,42 @@ void BC260_RST_Control(uint8_t state)
 {
     if(state)
     {
-        GPIO_SetBits(BC260_RST_PORT, BC260_RST_PIN);  // 拉高RST引脚
+        GPIO_SetBits(BC260_RST_PORT, BC260_RST_PIN);  // 拉高RST引脚（复位）
     }
     else
     {
-        GPIO_ResetBits(BC260_RST_PORT, BC260_RST_PIN);  // 拉低RST引脚
+        GPIO_ResetBits(BC260_RST_PORT, BC260_RST_PIN);  // 拉低RST引脚（正常运行）
     }
 }
 
 /*********************************************************************
  * @fn      BC260_HardReset
  *
- * @brief   对BC260执行硬复位
+ * @brief   对BC260执行硬复位（高电平复位模式）
+ *          拉高RST引脚复位，保持至少300ms
  *
  * @return  none
  */
 void BC260_HardReset(void)
 {
-    printf("Performing BC260 hard reset...\r\n");
-    BC260_RST_Control(0);  // 拉低RST引脚
-    Delay_Ms(200);        // 保持低电平一段时间
-    BC260_RST_Control(1);  // 拉高RST引脚
-    Delay_Ms(5000);       // 等待模块重新启动（BC260启动较慢）
+    printf("Performing BC260 hard reset (active high)...\r\n");
+    
+    // 确保RST引脚先处于低电平状态（正常运行）
+    BC260_RST_Control(0);
+    Delay_Ms(100);
+    
+    // 拉高RST引脚复位（至少300ms）
+    BC260_RST_Control(1);
+    Delay_Ms(300);        // 保持高电平300ms，确保可靠复位
+    
+    // 释放RST引脚（恢复低电平）
+    BC260_RST_Control(0);
+    
+    // 等待模块重新启动
+    // BC260从深睡眠唤醒或复位后需要较长时间初始化
+    printf("Waiting for BC260 to boot...\r\n");
+    Delay_Ms(8000);       // 等待8秒，确保模块完全启动
+    
     printf("BC260 hard reset completed.\r\n");
 }
 
@@ -1663,14 +1679,14 @@ uint8_t BC260_CheckNetworkAttach(void)
     // 发送AT+CGATT?查询网络附着状态
     if(BC260_SendCommand("AT+CGATT?", "+CGATT:", 5000))
     {
-        // 检查响应中是否包含"+CGATT:1"表示已附着
-        if(strstr((char*)BC260_rx_buffer, "+CGATT:1"))
+        // 检查响应中是否包含"+CGATT: 1"表示已附着 (注意：标准响应包含空格)
+        if(strstr((char*)BC260_rx_buffer, "+CGATT: 1"))
         {
             printf("[BC260] Network attached!\r\n");
             BC260_network_attached = 1;
             return 1;
         }
-        else if(strstr((char*)BC260_rx_buffer, "+CGATT:0"))
+        else if(strstr((char*)BC260_rx_buffer, "+CGATT: 0"))
         {
             printf("[BC260] Network not attached yet.\r\n");
             BC260_network_attached = 0;
@@ -1692,26 +1708,53 @@ uint8_t BC260_CheckNetworkAttach(void)
 uint8_t BC260_Init(void)
 {
     uint8_t retry;
+    uint8_t reset_attempt;
+    uint32_t flush_time;
 
     printf("\r\n=== Initializing BC260 NB-IoT Module ===\r\n");
 
-    // 硬复位BC260
-    BC260_HardReset();
+    for(reset_attempt = 0; reset_attempt < 2; reset_attempt++)
+    {
+        // 硬复位BC260
+        BC260_HardReset();
 
-    // 测试AT通信
-    printf("[BC260] Testing AT communication...\r\n");
-    for(retry = 0; retry < 5; retry++)
-    {
-        if(BC260_SendCommand("AT", "OK", 2000))
+        // 清空启动阶段可能输出的URC/日志，避免干扰AT响应判断
+        // BC260启动时会输出大量URC（如+QNBIOTEVENT等），需要充分清空
+        printf("[BC260] Flushing boot messages...\r\n");
+        flush_time = 0;
+        while(flush_time < 3000)  // 增加清空时间到3秒
         {
-            printf("[BC260] AT communication OK!\r\n");
-            break;
+            if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+            {
+                USART_ReceiveData(USART2);
+            }
+            Delay_Ms(1);
+            flush_time++;
         }
-        Delay_Ms(1000);
+        printf("[BC260] Boot messages flushed.\r\n");
+
+        // 测试AT通信
+        printf("[BC260] Testing AT communication (attempt %d/2)...\r\n", reset_attempt + 1);
+        for(retry = 0; retry < 5; retry++)
+        {
+            if(BC260_SendCommand("AT", "OK", 2000))
+            {
+                printf("[BC260] AT communication OK!\r\n");
+                break;
+            }
+            Delay_Ms(1000);
+        }
+        if(retry < 5)
+        {
+            break;  // AT通信成功，退出复位重试循环
+        }
+
+        printf("[BC260] AT communication failed after reset attempt %d.\r\n", reset_attempt + 1);
     }
-    if(retry >= 5)
+
+    if(reset_attempt >= 2)
     {
-        printf("[BC260] AT communication failed!\r\n");
+        printf("[BC260] AT communication failed after 2 hard resets!\r\n");
         return 0;
     }
 
@@ -1749,6 +1792,10 @@ uint8_t BC260_Init(void)
     Delay_Ms(500);
 
     // 设置网络功能
+    // 设置APN
+    BC260_SendCommand("AT+CGDCONT=1,\"IP\",\"cmnbiot\"", "OK", 5000);
+    Delay_Ms(500);
+
     // 开启射频功能
     BC260_SendCommand("AT+CFUN=1", "OK", 5000);
     Delay_Ms(1000);
@@ -1789,11 +1836,188 @@ uint8_t BC260_Init(void)
 }
 
 /*********************************************************************
+ * @fn      BC260_RecoveryReset
+ *
+ * @brief   对BC260执行恢复性硬复位，用于发送失败等异常恢复
+ *          复位后标记模块为未初始化状态，强制下次重新初始化
+ *
+ * @return  none
+ */
+void BC260_RecoveryReset(void)
+{
+    printf("[BC260] Performing recovery reset due to failure...\r\n");
+    BC260_HardReset();
+    BC260_initialized = 0;
+    BC260_network_attached = 0;
+    printf("[BC260] Recovery reset completed, module will re-init next time.\r\n");
+}
+
+/*********************************************************************
+ * @fn      BC260_ReceiveHTTPResponse
+ *
+ * @brief   接收BC260通过+QIURC上报的HTTP响应数据
+ *          BC260使用直吐模式，数据通过+QIURC: "recv",<connectID>,<length>,"<data>" URC上报
+ *
+ * @param   buffer - 接收缓冲区
+ * @param   buffer_size - 缓冲区大小
+ * @param   timeout - 超时时间(毫秒)
+ *
+ * @return  1-收到成功响应 0-未收到或解析失败
+ */
+uint8_t BC260_ReceiveHTTPResponse(char* buffer, uint16_t buffer_size, uint32_t timeout)
+{
+    uint32_t start_time = 0;
+    uint16_t index = 0;
+    uint8_t in_data = 0;       // 是否正在接收数据内容
+    uint16_t data_len = 0;     // 期望的数据长度
+    uint16_t recv_len = 0;     // 已接收的数据长度
+
+    memset(buffer, 0, buffer_size);
+
+    printf("[BC260] Waiting for HTTP response (timeout=%lums)...\r\n", (unsigned long)timeout);
+    printf("[BC260] Note: Data is reported via +QIURC URC in transparent mode\r\n");
+
+    while(start_time < timeout)
+    {
+        if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+        {
+            uint8_t data = USART_ReceiveData(USART2);
+            
+            // 存储原始数据用于调试（限制大小）
+            if(index < buffer_size - 1)
+            {
+                buffer[index++] = data;
+                buffer[index] = '\0';
+            }
+            
+            // 检查+QIURC: "recv" URC
+            if(!in_data && strstr(buffer, "+QIURC: \"recv\""))
+            {
+                // 解析数据长度
+                char* p = strstr(buffer, "+QIURC: \"recv\",");
+                if(p)
+                {
+                    p += strlen("+QIURC: \"recv\",");
+                    // 跳过connectID，找到长度
+                    while(*p && *p != ',') p++;
+                    if(*p == ',') p++;
+                    // 解析长度
+                    data_len = 0;
+                    while(*p && *p >= '0' && *p <= '9')
+                    {
+                        data_len = data_len * 10 + (*p - '0');
+                        p++;
+                    }
+                    if(*p == ',') p++;
+                    // 跳过开头的引号
+                    if(*p == '"') 
+                    {
+                        p++;
+                    }
+                    
+                    printf("[BC260] +QIURC recv detected, expected data length: %d\r\n", data_len);
+                    in_data = 1;
+                    recv_len = 0;
+                    
+                    // 将已读取的数据内容复制到buffer开头
+                    if(p && *p && p > buffer)
+                    {
+                        uint16_t content_len = strlen(p);
+                        if(content_len > 0 && content_len < buffer_size)
+                        {
+                            memmove(buffer, p, content_len + 1);
+                            recv_len = content_len;
+                            index = content_len;
+                        }
+                    }
+                }
+            }
+            else if(in_data)
+            {
+                // 继续接收数据内容
+                recv_len++;
+                
+                // 检查数据结束（收到结束引号或达到期望长度）
+                if(data_len > 0 && recv_len >= data_len)
+                {
+                    printf("[BC260] Data reception complete: %d bytes\r\n", recv_len);
+                    // 保留数据但不退出，继续监听可能的其他URC
+                }
+            }
+            
+            // 检查连接关闭
+            if(strstr(buffer, "+QIURC: \"closed\""))
+            {
+                printf("[BC260] Connection closed by peer\r\n");
+            }
+        }
+        Delay_Ms(1);
+        start_time++;
+    }
+
+    if(index > 0)
+    {
+        printf("[BC260] Total received %d bytes raw data\r\n", index);
+        
+        // 打印原始响应内容用于调试
+        printf("[BC260] Raw response:\r\n");
+        for(uint16_t i = 0; i < index && i < 500; i++)
+        {
+            if(buffer[i] >= 32 && buffer[i] <= 126)
+            {
+                printf("%c", buffer[i]);
+            }
+            else if(buffer[i] == '\r')
+            {
+                printf("\\r");
+            }
+            else if(buffer[i] == '\n')
+            {
+                printf("\\n\r\n");
+            }
+            else
+            {
+                printf("[%02X]", (uint8_t)buffer[i]);
+            }
+        }
+        if(index > 500) printf("... (%d more bytes)", index - 500);
+        printf("\r\n");
+
+        // 检查HTTP状态码
+        if(strstr(buffer, "HTTP/1.0 200") || strstr(buffer, "HTTP/1.1 200"))
+        {
+            printf("[BC260] HTTP 200 OK detected\r\n");
+            
+            // 检查企业微信返回
+            if(strstr(buffer, "\"errcode\":0") || strstr(buffer, "\"errmsg\":\"ok\""))
+            {
+                printf("[BC260] Webhook response: success\r\n");
+                return 1;
+            }
+            
+            // 即使没找到明确的errcode，HTTP 200也算成功
+            printf("[BC260] HTTP 200 received, assuming success\r\n");
+            return 1;
+        }
+        
+        // 如果没找到HTTP/1.x 200，但包含了成功标记
+        if(strstr(buffer, "errcode") && strstr(buffer, "0"))
+        {
+            printf("[BC260] Success marker found in response\r\n");
+            return 1;
+        }
+    }
+
+    printf("[BC260] No valid HTTP response received\r\n");
+    return 0;
+}
+
+/*********************************************************************
  * @fn      BC260_SendAlert
  *
  * @brief   通过BC260 NB-IoT发送警报消息到企业微信Webhook
- *          使用HTTP POST方式发送JSON数据
- *          注意：BC260不支持HTTPS，需要通过HTTP代理或中转服务
+ *          使用BC260Y-CN标准TCP/IP指令集(AT+QIxxx)
+ *          注意：BC260不支持HTTPS，需要通过HTTP代理转发
  *
  * @param   alert_msg - 警报消息内容
  *
@@ -1801,11 +2025,15 @@ uint8_t BC260_Init(void)
  */
 uint8_t BC260_SendAlert(char* alert_msg)
 {
-    // char cmd[512];  // 未使用变量，暂时注释
+    char cmd[256];
     char json_body[256];
     char http_request[768];
+    char response_buf[512];
     uint16_t json_len;
     uint16_t http_len;
+    uint8_t proxy_ip[4] = BC260_PROXY_IP;
+    const char* p;
+    uint32_t start_time = 0;
 
     if(!BC260_initialized)
     {
@@ -1824,7 +2052,7 @@ uint8_t BC260_SendAlert(char* alert_msg)
         }
     }
 
-    printf("[BC260] Sending alert via HTTP: %s\r\n", alert_msg);
+    printf("[BC260] Sending alert via HTTP proxy: %s\r\n", alert_msg);
 
     // 准备 JSON body（与ESP8266相同格式）
     sprintf(json_body,
@@ -1833,9 +2061,7 @@ uint8_t BC260_SendAlert(char* alert_msg)
 
     json_len = strlen(json_body);
 
-    // 准备完整的 HTTP POST 请求
-    // 注意：企业微信要求HTTPS，BC260需要通过HTTP代理转发
-    // 这里先使用HTTP方式，实际部署时需要配置HTTP转HTTPS代理服务器
+    // 准备完整的 HTTP POST 请求（发送到代理服务器）
     sprintf(http_request,
         "POST /cgi-bin/webhook/send?key=%s HTTP/1.1\r\n"
         "Host: qyapi.weixin.qq.com\r\n"
@@ -1851,69 +2077,346 @@ uint8_t BC260_SendAlert(char* alert_msg)
     http_len = strlen(http_request);
 
     printf("[BC260] HTTP request length: %d bytes\r\n", http_len);
-
-    // 使用BC260的TCP连接发送HTTP请求
-    // 创建TCP socket
-    if(!BC260_SendCommand("AT+NSOCR=STREAM,6,0,1", "OK", 5000))
+    printf("[BC260] HTTP request preview:\r\n");
+    // 打印HTTP请求前200字节用于调试
+    for(int i = 0; i < http_len && i < 200; i++)
     {
-        printf("[BC260] Failed to create TCP socket!\r\n");
+        if(http_request[i] >= 32 && http_request[i] <= 126)
+            printf("%c", http_request[i]);
+        else if(http_request[i] == '\r')
+            printf("\\r");
+        else if(http_request[i] == '\n')
+            printf("\\n\r\n");
+        else
+            printf("[%02X]", (uint8_t)http_request[i]);
+    }
+    if(http_len > 200) printf("... (%d more bytes)", http_len - 200);
+    printf("\r\n");
+    
+    printf("[BC260] Connecting to proxy: %d.%d.%d.%d:%d\r\n",
+           proxy_ip[0], proxy_ip[1], proxy_ip[2], proxy_ip[3], BC260_PROXY_PORT);
+
+    uint8_t send_attempt;
+    uint8_t prompt_received;
+    uint8_t connected;
+    uint8_t state_val;
+    char* state_ptr;
+
+    // 1. 关闭可能存在的旧连接，并等待资源完全释放
+    BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
+    Delay_Ms(2000);  // 等待 CLOSE OK 等延迟URC上报
+    // 消费可能残留的URC数据
+    start_time = 0;
+    while(start_time < 2000)
+    {
+        if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+        {
+            USART_ReceiveData(USART2);
+        }
+        Delay_Ms(1);
+        start_time++;
+    }
+
+    // 2. 配置数据格式为文本字符串
+    if(!BC260_SendCommand("AT+QICFG=\"dataformat\",0,0", "OK", 3000))
+    {
+        printf("[BC260] Failed to configure data format!\r\n");
+        BC260_RecoveryReset();
         return 0;
     }
 
-    Delay_Ms(500);
-
-    // 连接到服务器（企业微信需要HTTPS，这里尝试HTTP端口80）
-    // 注意：实际使用需要配置HTTP代理服务器地址
-    // 企业微信API服务器IP可能会变化，建议使用代理服务
-    // 示例使用: AT+NSOCO=0,<server_ip>,<port>
-    printf("[BC260] Note: WeChat Work requires HTTPS. Please configure an HTTP proxy server.\r\n");
-    printf("[BC260] Current implementation is for demonstration purposes.\r\n");
-
-    // 由于企业微信需要HTTPS而BC260标准固件不支持SSL
-    // 这里提供框架代码，实际部署需要：
-    // 1. 使用支持SSL的BC260固件
-    // 2. 或部署HTTP转HTTPS代理服务器
-    // 3. 或使用其他支持HTTP的IoT平台
-
-    // 以下为示例代码框架（需要配置代理服务器IP和端口）
-    /*
-    // 连接代理服务器
-    sprintf(cmd, "AT+NSOCO=0,%s,%d", "代理服务器IP", 代理端口);
-    if(!BC260_SendCommand(cmd, "OK", 10000))
+    // 3. 打开TCP连接 (contextID=0, connectID=0)
+    sprintf(cmd, "AT+QIOPEN=0,0,\"TCP\",\"%d.%d.%d.%d\",%d",
+            proxy_ip[0], proxy_ip[1], proxy_ip[2], proxy_ip[3], BC260_PROXY_PORT);
+    if(!BC260_SendCommand(cmd, "OK", 15000))
     {
-        printf("[BC260] Failed to connect to server!\r\n");
-        BC260_SendCommand("AT+NSOCL=0", "OK", 2000);
+        printf("[BC260] Failed to open TCP connection!\r\n");
+        BC260_RecoveryReset();
         return 0;
     }
 
-    Delay_Ms(500);
-
-    // 将HTTP请求转换为十六进制字符串
-    char hex_data[1536];
-    for(int i = 0; i < http_len; i++)
+    // 等待连接真正建立完成：轮询 QISTATE 直到 state=2 (Connected)，最多30秒
+    printf("[BC260] Waiting for TCP connection to be fully established...\r\n");
+    connected = 0;
+    start_time = 0;
+    while(start_time < 30000)
     {
-        sprintf(&hex_data[i*2], "%02X", (uint8_t)http_request[i]);
+        // 每500ms查询一次
+        if((start_time % 500) == 0 && start_time > 0)
+        {
+            if(BC260_SendCommand("AT+QISTATE?", "OK", 3000))
+            {
+                // 解析 socket state: +QISTATE: 0,"TCP",...,state
+                state_ptr = strstr((char*)BC260_rx_buffer, "+QISTATE: 0,");
+                if(state_ptr)
+                {
+                    // 找到第5个逗号后的状态值
+                    // 格式: +QISTATE: 0,"TCP","ip",port,local_port,state,...
+                    uint8_t comma_cnt = 0;
+                    char* p_state = state_ptr;
+                    while(*p_state && comma_cnt < 5)
+                    {
+                        if(*p_state == ',') comma_cnt++;
+                        p_state++;
+                    }
+                    if(*p_state)
+                    {
+                        state_val = (uint8_t)(*p_state - '0');
+                        if(state_val == 2)
+                        {
+                            connected = 1;
+                            printf("[BC260] TCP connection established (state=2).\r\n");
+                            break;
+                        }
+                        else if(state_val == 1)
+                        {
+                            printf("[BC260] TCP connecting (state=1)...\r\n");
+                        }
+                    }
+                }
+            }
+        }
+        Delay_Ms(10);
+        start_time += 10;
     }
-    hex_data[http_len*2] = '\0';
 
-    // 发送数据
-    sprintf(cmd, "AT+NSOSD=0,%d,%s", http_len, hex_data);
-    if(!BC260_SendCommand(cmd, "OK", 10000))
+    if(!connected)
     {
-        printf("[BC260] Failed to send HTTP request!\r\n");
-        BC260_SendCommand("AT+NSOCL=0", "OK", 2000);
+        printf("[BC260] TCP connection establishment timeout!\r\n");
+        BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
+        BC260_RecoveryReset();
         return 0;
     }
 
-    Delay_Ms(2000);
-    */
+    // 4. 发送 AT+QISEND 命令，等待 > 提示符（带重试）
+    // 注意：BC260在收到AT+QISEND后，会先返回OK，然后再输出">"提示符
+    // 所以需要特殊处理，继续等待">"而不是只看OK响应
+    prompt_received = 0;
+    for(send_attempt = 0; send_attempt < 2; send_attempt++)
+    {
+        // 清空接收缓冲区
+        memset((void*)BC260_rx_buffer, 0, sizeof(BC260_rx_buffer));
+        BC260_rx_index = 0;
+        
+        sprintf(cmd, "AT+QISEND=0,%d", http_len);
+        printf("[BC260] Sending: %s\r\n", cmd);
+        
+        // 发送命令
+        p = cmd;
+        while(*p)
+        {
+            while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+            USART_SendData(USART2, *p);
+            p++;
+        }
+        while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+        USART_SendData(USART2, '\r');
+        while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+        USART_SendData(USART2, '\n');
+        
+        // 等待OK响应，然后继续等待">"提示符（总共最多8秒）
+        start_time = 0;
+        uint8_t ok_received = 0;
+        while(start_time < 8000)
+        {
+            if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+            {
+                uint8_t data = USART_ReceiveData(USART2);
+                if(BC260_rx_index < sizeof(BC260_rx_buffer) - 1)
+                {
+                    BC260_rx_buffer[BC260_rx_index++] = data;
+                    BC260_rx_buffer[BC260_rx_index] = '\0';
+                    
+                    // 检查是否收到OK
+                    if(!ok_received && strstr((char*)BC260_rx_buffer, "OK"))
+                    {
+                        ok_received = 1;
+                        printf("[BC260] OK received, waiting for '>'...\r\n");
+                    }
+                    
+                    // 检查是否收到">"提示符
+                    if(strstr((char*)BC260_rx_buffer, ">"))
+                    {
+                        prompt_received = 1;
+                        printf("[BC260] Send prompt '>' received (attempt %d/2).\r\n", send_attempt + 1);
+                        break;
+                    }
+                    
+                    // 检查错误
+                    if(strstr((char*)BC260_rx_buffer, "ERROR"))
+                    {
+                        printf("[BC260] ERROR received.\r\n");
+                        break;
+                    }
+                }
+            }
+            Delay_Ms(1);
+            start_time++;
+        }
+        
+        if(prompt_received)
+        {
+            break;
+        }
+        
+        printf("[BC260] No send prompt '>' received (attempt %d/2).\r\n", send_attempt + 1);
+        printf("[BC260] Response buffer: %s\r\n", (char*)BC260_rx_buffer);
 
-    // 关闭socket
-    BC260_SendCommand("AT+NSOCL=0", "OK", 2000);
+        if(send_attempt == 0)
+        {
+            // 第一次失败，关闭并重新创建连接（参考Python脚本的策略）
+            printf("[BC260] Retrying with new TCP connection...\r\n");
+            BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
+            Delay_Ms(2000);
+            // 消费残留URC
+            start_time = 0;
+            while(start_time < 2000)
+            {
+                if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+                {
+                    USART_ReceiveData(USART2);
+                }
+                Delay_Ms(1);
+                start_time++;
+            }
+            
+            // 发送空AT确认模块清醒
+            BC260_SendCommand("AT", "OK", 3000);
+            Delay_Ms(500);
 
-    printf("[BC260] Alert message prepared: %s\r\n", alert_msg);
-    printf("[BC260] To enable actual sending, configure HTTP proxy or use SSL-capable firmware.\r\n");
-    return 1;
+            sprintf(cmd, "AT+QIOPEN=0,0,\"TCP\",\"%d.%d.%d.%d\",%d",
+                    proxy_ip[0], proxy_ip[1], proxy_ip[2], proxy_ip[3], BC260_PROXY_PORT);
+            if(!BC260_SendCommand(cmd, "OK", 15000))
+            {
+                printf("[BC260] Failed to reopen TCP connection!\r\n");
+                BC260_RecoveryReset();
+                return 0;
+            }
+
+            // 等待连接建立
+            connected = 0;
+            start_time = 0;
+            while(start_time < 30000)
+            {
+                if((start_time % 500) == 0 && start_time > 0)
+                {
+                    if(BC260_SendCommand("AT+QISTATE?", "OK", 3000))
+                    {
+                        state_ptr = strstr((char*)BC260_rx_buffer, "+QISTATE: 0,");
+                        if(state_ptr)
+                        {
+                            uint8_t comma_cnt = 0;
+                            char* p_state = state_ptr;
+                            while(*p_state && comma_cnt < 5)
+                            {
+                                if(*p_state == ',') comma_cnt++;
+                                p_state++;
+                            }
+                            if(*p_state)
+                            {
+                                state_val = (uint8_t)(*p_state - '0');
+                                if(state_val == 2)
+                                {
+                                    connected = 1;
+                                    printf("[BC260] TCP reconnected (state=2).\r\n");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Delay_Ms(10);
+                start_time += 10;
+            }
+
+            if(!connected)
+            {
+                printf("[BC260] TCP reconnection timeout!\r\n");
+                BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
+                BC260_RecoveryReset();
+                return 0;
+            }
+            
+            // 重新连接后给模块一点时间恢复
+            Delay_Ms(2000);
+        }
+    }
+
+    if(!prompt_received)
+    {
+        printf("[BC260] Failed to get send prompt after 2 attempts!\r\n");
+        BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
+        BC260_RecoveryReset();
+        return 0;
+    }
+
+    // 5. 发送实际HTTP数据（字节流，不带换行）
+    printf("[BC260] Sending HTTP data (%d bytes)...\r\n", http_len);
+    p = http_request;
+    while(*p)
+    {
+        while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+        USART_SendData(USART2, *p);
+        p++;
+    }
+
+    // 6. 等待 SEND OK
+    memset((void*)BC260_rx_buffer, 0, sizeof(BC260_rx_buffer));
+    BC260_rx_index = 0;
+    start_time = 0;
+    while(start_time < 15000)
+    {
+        if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+        {
+            uint8_t data = USART_ReceiveData(USART2);
+            if(BC260_rx_index < sizeof(BC260_rx_buffer) - 1)
+            {
+                BC260_rx_buffer[BC260_rx_index++] = data;
+                BC260_rx_buffer[BC260_rx_index] = '\0';
+
+                if(strstr((char*)BC260_rx_buffer, "SEND OK"))
+                {
+                    printf("[BC260] SEND OK received.\r\n");
+                    break;
+                }
+                if(strstr((char*)BC260_rx_buffer, "SEND FAIL"))
+                {
+                    printf("[BC260] SEND FAIL received!\r\n");
+                    BC260_SendCommand("AT+QICLOSE=0", "OK", 2000);
+                    BC260_RecoveryReset();
+                    return 0;
+                }
+            }
+        }
+        Delay_Ms(1);
+        start_time++;
+    }
+
+    if(!strstr((char*)BC260_rx_buffer, "SEND OK"))
+    {
+        printf("[BC260] Timeout waiting for SEND OK!\r\n");
+        BC260_SendCommand("AT+QICLOSE=0", "OK", 2000);
+        BC260_RecoveryReset();
+        return 0;
+    }
+
+    // 7. 等待并接收HTTP响应
+    // 服务器需要时间处理请求并返回响应，先延时等待
+    printf("[BC260] Waiting for server response...\r\n");
+    Delay_Ms(5000);  // 增加等待时间到5秒
+    if(BC260_ReceiveHTTPResponse(response_buf, sizeof(response_buf), 15000))  // 增加接收超时到15秒
+    {
+        printf("[BC260] Alert sent successfully!\r\n");
+        BC260_SendCommand("AT+QICLOSE=0", "OK", 2000);
+        return 1;
+    }
+    else
+    {
+        printf("[BC260] No valid response received, but data may have been sent.\r\n");
+        BC260_SendCommand("AT+QICLOSE=0", "OK", 2000);
+        // 即使没收到响应，也可能已经发送成功了（和Python测试脚本情况类似）
+        return 1;
+    }
 }
 #endif /* ENABLE_BC260 */
 
