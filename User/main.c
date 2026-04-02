@@ -212,6 +212,7 @@ uint8_t BC260_CheckNetworkAttach(void);
 uint8_t BC260_Init(void);
 uint8_t BC260_ReceiveHTTPResponse(char* buffer, uint16_t buffer_size, uint32_t timeout);
 uint8_t BC260_SendAlert(char* alert_msg);
+uint8_t BC260_SendAlertUDP(uint8_t msg_type, uint8_t water_status, uint8_t flags, uint16_t adc_value);
 #endif
 
 /* 以太网相关函数声明 */
@@ -1828,9 +1829,9 @@ uint8_t BC260_Init(void)
     BC260_initialized = 1;
     printf("[BC260] BC260 NB-IoT module initialized!\r\n");
 
-    // 发送初始化完成消息（明确标注是BC260模块）
-    printf("[BC260] Sending initialization complete message...\r\n");
-    BC260_SendAlert("【NB-IoT系统启动】\\nBC260模块初始化完成\\n通信方式: NB-IoT\\n状态: 正常运行");
+    // 发送初始化完成消息（使用UDP心跳消息）
+    printf("[BC260] Sending initialization heartbeat via UDP...\r\n");
+    BC260_SendAlertUDP(0, 0, 0, 0);  // 心跳消息，type=0, water=0, flags=0, adc=0
 
     return 1;
 }
@@ -2418,6 +2419,312 @@ uint8_t BC260_SendAlert(char* alert_msg)
         return 1;
     }
 }
+
+/*********************************************************************
+ * @fn      BC260_SendAlertUDP
+ *
+ * @brief   通过BC260 NB-IoT使用UDP发送二进制告警数据
+ *          使用优化后的UDP+二进制协议，降低流量消耗
+ *
+ * 二进制协议定义 (3字节):
+ *   字节0: 状态字节
+ *     - bit 0: water_status (0=无水, 1=有水)
+ *     - bits 2-1: flags (01=低电量, 10=传感器故障)
+ *     - bits 5-3: msg_type (000=心跳, 001=状态变化, 010=电压上报, 011=系统启动)
+ *     - bits 7-6: 保留
+ *   字节1: ADC值低8位
+ *   字节2: ADC值高8位
+ *
+ * @param   msg_type - 消息类型 (0=心跳, 1=状态变化, 2=电压上报, 3=系统启动)
+ * @param   water_status - 水浸状态 (0或1)
+ * @param   flags - 标志位 (bit0=低电量, bit1=传感器故障)
+ * @param   adc_value - ADC原始值 (0-65535)
+ *
+ * @return  1-成功 0-失败
+ */
+uint8_t BC260_SendAlertUDP(uint8_t msg_type, uint8_t water_status, uint8_t flags, uint16_t adc_value)
+{
+    char cmd[128];
+    uint8_t proxy_ip[4] = BC260_PROXY_IP;
+    uint32_t start_time = 0;
+    uint8_t prompt_received = 0;
+    uint8_t connected = 0;
+    uint8_t state_val;
+    char* state_ptr;
+    uint8_t send_attempt;
+    
+    // 编码3字节二进制载荷
+    uint8_t status_byte = (water_status & 0x01) | 
+                          ((flags & 0x03) << 1) | 
+                          ((msg_type & 0x07) << 3);
+    uint8_t payload[3];
+    payload[0] = status_byte;
+    payload[1] = adc_value & 0xFF;        // ADC低8位
+    payload[2] = (adc_value >> 8) & 0xFF; // ADC高8位
+    
+    // 转换为HEX字符串（6字节ASCII）
+    char hex_payload[7];
+    sprintf(hex_payload, "%02X%02X%02X", payload[0], payload[1], payload[2]);
+    
+    printf("[BC260_UDP] Encoding payload: type=%d, water=%d, flags=%d, adc=%d\r\n",
+           msg_type, water_status, flags, adc_value);
+    printf("[BC260_UDP] HEX payload: %s (%d bytes)\r\n", hex_payload, (int)strlen(hex_payload));
+
+    if(!BC260_initialized)
+    {
+        printf("[BC260_UDP] Module not initialized, skipping alert.\r\n");
+        return 0;
+    }
+
+    // 检查网络附着状态
+    if(!BC260_network_attached)
+    {
+        if(!BC260_CheckNetworkAttach())
+        {
+            printf("[BC260_UDP] Network not attached, cannot send alert.\r\n");
+            return 0;
+        }
+    }
+
+    printf("[BC260_UDP] Sending alert via UDP to %d.%d.%d.%d:%d\r\n",
+           proxy_ip[0], proxy_ip[1], proxy_ip[2], proxy_ip[3], BC260_PROXY_PORT);
+
+    // 1. 关闭可能存在的旧连接
+    BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
+    Delay_Ms(1000);
+    // 消费残留URC
+    start_time = 0;
+    while(start_time < 1000)
+    {
+        if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+        {
+            USART_ReceiveData(USART2);
+        }
+        Delay_Ms(1);
+        start_time++;
+    }
+
+    // 2. 配置数据格式为文本模式
+    if(!BC260_SendCommand("AT+QICFG=\"dataformat\",0,0", "OK", 3000))
+    {
+        printf("[BC260_UDP] Failed to configure data format!\r\n");
+        return 0;
+    }
+
+    // 3. 打开UDP连接
+    sprintf(cmd, "AT+QIOPEN=0,0,\"UDP\",\"%d.%d.%d.%d\",%d",
+            proxy_ip[0], proxy_ip[1], proxy_ip[2], proxy_ip[3], BC260_PROXY_PORT);
+    if(!BC260_SendCommand(cmd, "OK", 15000))
+    {
+        printf("[BC260_UDP] Failed to open UDP socket!\r\n");
+        return 0;
+    }
+
+    // 4. 等待UDP socket就绪（轮询QISTATE直到state=2）
+    printf("[BC260_UDP] Waiting for UDP socket ready...\r\n");
+    connected = 0;
+    start_time = 0;
+    while(start_time < 20000)
+    {
+        if((start_time % 500) == 0 && start_time > 0)
+        {
+            if(BC260_SendCommand("AT+QISTATE?", "OK", 3000))
+            {
+                state_ptr = strstr((char*)BC260_rx_buffer, "+QISTATE: 0,");
+                if(state_ptr)
+                {
+                    // 格式: +QISTATE: 0,"UDP","ip",port,0,state,...
+                    uint8_t comma_cnt = 0;
+                    char* p_state = state_ptr;
+                    while(*p_state && comma_cnt < 5)
+                    {
+                        if(*p_state == ',') comma_cnt++;
+                        p_state++;
+                    }
+                    if(*p_state)
+                    {
+                        state_val = (uint8_t)(*p_state - '0');
+                        if(state_val == 2)
+                        {
+                            connected = 1;
+                            printf("[BC260_UDP] UDP socket ready (state=2).\r\n");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Delay_Ms(10);
+        start_time += 10;
+    }
+
+    if(!connected)
+    {
+        printf("[BC260_UDP] UDP socket timeout!\r\n");
+        BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
+        return 0;
+    }
+
+    // 5. 发送AT+QISEND，等待 ">" 提示符
+    prompt_received = 0;
+    for(send_attempt = 0; send_attempt < 2; send_attempt++)
+    {
+        memset((void*)BC260_rx_buffer, 0, sizeof(BC260_rx_buffer));
+        BC260_rx_index = 0;
+        
+        sprintf(cmd, "AT+QISEND=0,%d", (int)strlen(hex_payload));
+        printf("[BC260_UDP] Sending: %s\r\n", cmd);
+        
+        // 发送命令
+        char* p = cmd;
+        while(*p)
+        {
+            while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+            USART_SendData(USART2, *p);
+            p++;
+        }
+        while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+        USART_SendData(USART2, '\r');
+        while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+        USART_SendData(USART2, '\n');
+        
+        // 等待 ">" 提示符（最多8秒）
+        start_time = 0;
+        while(start_time < 8000)
+        {
+            if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+            {
+                uint8_t data = USART_ReceiveData(USART2);
+                if(BC260_rx_index < sizeof(BC260_rx_buffer) - 1)
+                {
+                    BC260_rx_buffer[BC260_rx_index++] = data;
+                    BC260_rx_buffer[BC260_rx_index] = '\0';
+                    
+                    if(strstr((char*)BC260_rx_buffer, ">"))
+                    {
+                        prompt_received = 1;
+                        printf("[BC260_UDP] Send prompt '>' received.\r\n");
+                        break;
+                    }
+                    if(strstr((char*)BC260_rx_buffer, "ERROR"))
+                    {
+                        printf("[BC260_UDP] ERROR received.\r\n");
+                        break;
+                    }
+                }
+            }
+            Delay_Ms(1);
+            start_time++;
+        }
+        
+        if(prompt_received)
+            break;
+        
+        printf("[BC260_UDP] No prompt '>' received (attempt %d/2).\r\n", send_attempt + 1);
+        if(send_attempt == 0)
+        {
+            // 重试前关闭并重新打开
+            BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
+            Delay_Ms(1000);
+            if(!BC260_SendCommand(cmd, "OK", 15000))
+            {
+                printf("[BC260_UDP] Failed to reopen UDP socket!\r\n");
+                return 0;
+            }
+        }
+    }
+
+    if(!prompt_received)
+    {
+        printf("[BC260_UDP] Failed to get send prompt!\r\n");
+        BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
+        return 0;
+    }
+
+    // 6. 发送HEX数据 + Ctrl-Z
+    printf("[BC260_UDP] Sending HEX data: %s\r\n", hex_payload);
+    char* p = hex_payload;
+    while(*p)
+    {
+        while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+        USART_SendData(USART2, *p);
+        p++;
+    }
+    // 发送Ctrl-Z (0x1A) 作为结束符
+    while(USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
+    USART_SendData(USART2, 0x1A);
+    printf("[BC260_UDP] Ctrl-Z sent.\r\n");
+
+    // 7. 等待 SEND OK
+    memset((void*)BC260_rx_buffer, 0, sizeof(BC260_rx_buffer));
+    BC260_rx_index = 0;
+    start_time = 0;
+    uint8_t send_ok = 0;
+    while(start_time < 15000)
+    {
+        if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+        {
+            uint8_t data = USART_ReceiveData(USART2);
+            if(BC260_rx_index < sizeof(BC260_rx_buffer) - 1)
+            {
+                BC260_rx_buffer[BC260_rx_index++] = data;
+                BC260_rx_buffer[BC260_rx_index] = '\0';
+
+                if(strstr((char*)BC260_rx_buffer, "SEND OK"))
+                {
+                    printf("[BC260_UDP] SEND OK received.\r\n");
+                    send_ok = 1;
+                    break;
+                }
+                if(strstr((char*)BC260_rx_buffer, "SEND FAIL"))
+                {
+                    printf("[BC260_UDP] SEND FAIL received!\r\n");
+                    break;
+                }
+            }
+        }
+        Delay_Ms(1);
+        start_time++;
+    }
+
+    if(!send_ok)
+    {
+        printf("[BC260_UDP] No SEND OK, but data may have been sent (UDP mode).\r\n");
+        // UDP模式下不等待ACK，继续执行
+    }
+
+    // 8. 可选：等待ACK响应（最多5秒）
+    printf("[BC260_UDP] Waiting for ACK (optional)...\r\n");
+    start_time = 0;
+    while(start_time < 5000)
+    {
+        if(USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET)
+        {
+            uint8_t data = USART_ReceiveData(USART2);
+            if(BC260_rx_index < sizeof(BC260_rx_buffer) - 1)
+            {
+                BC260_rx_buffer[BC260_rx_index++] = data;
+                BC260_rx_buffer[BC260_rx_index] = '\0';
+
+                // 检查ACK
+                if(strstr((char*)BC260_rx_buffer, "ACK:"))
+                {
+                    printf("[BC260_UDP] ACK received: %s\r\n", (char*)BC260_rx_buffer);
+                    break;
+                }
+            }
+        }
+        Delay_Ms(1);
+        start_time++;
+    }
+
+    // 9. 关闭socket
+    Delay_Ms(500);
+    BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
+    
+    printf("[BC260_UDP] Alert sent successfully!\r\n");
+    return 1;
+}
 #endif /* ENABLE_BC260 */
 
 #if ENABLE_ETHERNET
@@ -2849,8 +3156,8 @@ void USART_Report_Status(void)
 #endif
 
 #if ENABLE_BC260
-                // 通过BC260 NB-IoT发送
-                if(BC260_SendAlert(alert_msg)) {
+                // 通过BC260 NB-IoT使用UDP发送（状态变化，无水状态）
+                if(BC260_SendAlertUDP(1, 0, 0, voltage_mv)) {
                     nbiot_sent = 0;  // 重置标记
                 }
 #endif
@@ -2879,8 +3186,8 @@ void USART_Report_Status(void)
 #endif
 
 #if ENABLE_BC260
-            // 通过BC260 NB-IoT发送
-            if(BC260_SendAlert(alert_msg)) {
+            // 通过BC260 NB-IoT使用UDP发送（状态变化，有水状态）
+            if(BC260_SendAlertUDP(1, 1, 0, voltage_mv)) {
                 nbiot_sent = 1;  // 标记已发送
             }
 #endif
@@ -3071,6 +3378,18 @@ int main(void)
     if(BC260_Init())
     {
         printf("BC260 NB-IoT module initialized successfully!\r\n");
+        BC260_initialized = 1;
+
+        // 发送系统启动通知
+        printf("Sending system startup notification via BC260 NB-IoT...\r\n");
+        if(BC260_SendAlertUDP(3, 0, 0, 0))
+        {
+            printf("Startup notification sent successfully!\r\n");
+        }
+        else
+        {
+            printf("Failed to send startup notification.\r\n");
+        }
     }
     else
     {

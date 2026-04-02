@@ -113,3 +113,5 @@ cmake_install.cmake
 !ESP8266-Firmware/*.*
 !tools/
 !tools/*.*
+/replacements.txt
+/bfg-1.15.0.jar

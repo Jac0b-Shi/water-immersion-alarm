@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-企业微信Webhook代理服务器（TCP + UDP 整合版）
+企业微信Webhook UDP代理服务器
 基于Kimi研究报告的UDP+二进制优化方案
 
 功能:
-1. TCP模式: 接收CH32V208/ESP8266的HTTP请求，转发到企业微信HTTPS接口
-2. UDP模式: 接收BC260发送的二进制数据包，解码后转发到企业微信
+1. 监听UDP端口，接收BC260发送的二进制数据包
+2. 解码3字节二进制协议为传感器状态
+3. 将状态信息转发到企业微信Webhook
 
 二进制协议定义 (3字节):
   字节0: 状态字节
@@ -18,15 +19,10 @@
   字节2: ADC值高8位
 
 使用方法:
-    python webhook_proxy.py
+    python webhook_proxy_udp.py
 
-配置方式（推荐环境变量）:
-    export WEBHOOK_KEY=your_webhook_key_here
-    python webhook_proxy.py
-
-运行后监听:
-  - TCP 0.0.0.0:8080 - 用于CH32V208/ESP8266 HTTP代理
-  - UDP 0.0.0.0:8080 - 用于BC260 NB-IoT二进制数据（与TCP共用端口）
+运行后监听 UDP 0.0.0.0:8080
+TCP方案 (webhook_proxy.py) 不受影响，与UDP共用8080端口（协议不同，互不冲突）
 """
 
 import socket
@@ -36,12 +32,9 @@ import sys
 import os
 import time
 import argparse
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, urlencode
 
-# 监听端口（TCP和UDP共用）
-LISTEN_PORT = 8080
+# UDP监听端口 (与TCP的webhook_proxy.py共用8080，TCP和UDP协议不同互不冲突)
+UDP_LISTEN_PORT = 8080
 
 # 企业微信Webhook地址
 WEIXIN_WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send"
@@ -53,7 +46,7 @@ def load_config(config_path=None):
     
     服务器部署推荐方式：
       export WEBHOOK_KEY=your_key_here
-      python webhook_proxy.py
+      python webhook_proxy_udp.py
     
     或使用 systemd service 的 Environment 配置
     """
@@ -197,8 +190,8 @@ def send_wechat_message(webhook_key, message):
         return False
 
 
-def format_udp_message(client_addr, decoded, packet_size):
-    """格式化UDP消息文本"""
+def format_message(client_addr, decoded, packet_size):
+    """格式化微信消息文本"""
     lines = [
         "【UDP设备告警/上报】",
         f"来源: {client_addr[0]}:{client_addr[1]}",
@@ -216,114 +209,7 @@ def format_udp_message(client_addr, decoded, packet_size):
     return "\n".join(lines)
 
 
-class TCPProxyHandler(BaseHTTPRequestHandler):
-    """TCP HTTP代理处理器"""
-    
-    def __init__(self, webhook_key, *args, **kwargs):
-        self.webhook_key = webhook_key
-        super().__init__(*args, **kwargs)
-    
-    def do_POST(self):
-        try:
-            # 读取请求体
-            MAX_BODY = 10 * 1024
-            content_length = int(self.headers.get('Content-Length', 0))
-            if content_length > MAX_BODY:
-                self.send_response(413)
-                self.end_headers()
-                return
-            body = self.rfile.read(content_length)
-
-            # 解析路径中的key参数
-            # 请求格式: POST /cgi-bin/webhook/send?key=xxx
-            if '/cgi-bin/webhook/send' in self.path:
-                # 解析URL
-                parsed_url = urlparse(self.path)
-                query_params = parse_qs(parsed_url.query)
-                
-                # 获取key参数，如果不存在则使用环境变量的key
-                request_key = query_params.get('key', [''])[0]
-                if request_key:
-                    # 使用请求中的key
-                    target_key = request_key
-                    print(f"[TCP] 使用请求中的key: {request_key[:8]}...")
-                elif self.webhook_key:
-                    # 回退到环境变量/配置文件的key
-                    target_key = self.webhook_key
-                    print(f"[TCP] 请求中无key参数，使用环境变量key: {self.webhook_key[:8]}...")
-                else:
-                    # 没有key可用
-                    print("[TCP] 错误: 请求中无key参数，且未配置环境变量key")
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b'{"errcode": 400, "errmsg": "Missing webhook key"}')
-                    return
-                
-                # 构造完整的企业微信URL
-                target_url = f"{WEIXIN_WEBHOOK_URL}?key={target_key}"
-
-                print(f"[TCP] 收到请求: {self.path}")
-                print(f"[TCP] 请求体: {body.decode('utf-8', errors='ignore')}")
-                print(f"[TCP] 转发到: {WEIXIN_WEBHOOK_URL}?key=***")
-
-                # 转发到企业微信
-                response = requests.post(
-                    target_url,
-                    data=body,
-                    headers={'Content-Type': 'application/json'},
-                    timeout=10
-                )
-
-                print(f"[TCP] 企业微信响应: {response.status_code} - {response.text}")
-
-                # 返回响应给客户端
-                self.send_response(response.status_code)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(response.content)
-            else:
-                # 未知路径
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(b'{"errcode": 404, "errmsg": "Not Found"}')
-
-        except Exception as e:
-            print(f"[TCP] 错误: {e}")
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(f'{{"errcode": 500, "errmsg": "{str(e)}"}}'.encode())
-
-    def do_GET(self):
-        """健康检查接口"""
-        if self.path == '/health' or self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'Webhook Proxy OK (TCP+UDP)')
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, format, *args):
-        """自定义日志格式"""
-        print(f"[TCP] {self.address_string()} - {format % args}")
-
-
-def run_tcp_server(webhook_key, port):
-    """运行TCP代理服务器"""
-    def handler(*args, **kwargs):
-        return TCPProxyHandler(webhook_key, *args, **kwargs)
-    
-    server = HTTPServer(('0.0.0.0', port), handler)
-    print(f"[TCP] 代理服务器已启动: 0.0.0.0:{port}")
-    
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[TCP] 服务器已停止")
-
-
-def run_udp_server(webhook_key, port, forward_heartbeat=False):
+def run_udp_proxy(webhook_key, port, forward_heartbeat=False):
     """运行UDP代理服务器"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -332,7 +218,29 @@ def run_udp_server(webhook_key, port, forward_heartbeat=False):
         pass
     sock.bind(('0.0.0.0', port))
 
-    print(f"[UDP] 代理服务器已启动: 0.0.0.0:{port}")
+    print("=" * 60)
+    print("企业微信Webhook UDP代理服务器")
+    print("=" * 60)
+    print(f"UDP监听地址: 0.0.0.0:{port}")
+    print(f"Webhook目标: {WEIXIN_WEBHOOK_URL}")
+    if webhook_key:
+        # 只显示 key 的前8位和后4位，中间用***隐藏
+        masked_key = webhook_key[:8] + "***" + webhook_key[-4:] if len(webhook_key) > 12 else "已配置"
+        print(f"Webhook Key: {masked_key}")
+    else:
+        print(f"Webhook Key: 未配置 (消息只记录日志，不发送到企业微信)")
+        print(f"  配置方式1: export WEBHOOK_KEY=your_key")
+        print(f"  配置方式2: python webhook_proxy_udp.py --webhook-key YOUR_KEY")
+    print(f"转发心跳: {'是' if forward_heartbeat else '否'}")
+    print()
+    print("二进制协议 (3字节):")
+    print("  字节0: [状态/类型]")
+    print("  字节1: [ADC低8位]")
+    print("  字节2: [ADC高8位]")
+    print()
+    print("注意: 此UDP代理与TCP代理 (webhook_proxy.py) 共用8080端口，互不冲突")
+    print("按 Ctrl+C 停止服务器")
+    print("=" * 60)
 
     try:
         while True:
@@ -361,46 +269,47 @@ def run_udp_server(webhook_key, port, forward_heartbeat=False):
                 print("[*] 心跳消息，仅记录日志，不转发到微信")
                 continue
 
-            message = format_udp_message(addr, decoded, len(data))
+            message = format_message(addr, decoded, len(data))
             send_wechat_message(webhook_key, message)
 
     except KeyboardInterrupt:
-        print("\n[UDP] 服务器已停止")
+        print("\n[PROXY] 服务器已停止")
     finally:
         sock.close()
+        sys.exit(0)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='企业微信Webhook代理服务器（TCP + UDP 整合版）',
+        description='企业微信Webhook UDP代理服务器',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 服务器部署示例 (推荐):
   # 使用环境变量配置 (systemd service 推荐方式)
   export WEBHOOK_KEY=your_webhook_key_here
-  python webhook_proxy.py
+  python webhook_proxy_udp.py
 
 本地开发示例:
   # 自动加载config.env
-  python webhook_proxy.py
+  python webhook_proxy_udp.py
 
   # 指定端口
-  python webhook_proxy.py --port 9090
+  python webhook_proxy_udp.py --port 9090
 
   # 指定webhook key (覆盖环境变量和配置文件)
-  python webhook_proxy.py --webhook-key YOUR_KEY
+  python webhook_proxy_udp.py --webhook-key YOUR_KEY
 
   # 同时转发心跳消息到微信
-  python webhook_proxy.py --forward-heartbeat
+  python webhook_proxy_udp.py --forward-heartbeat
 
 systemd service 配置示例:
   [Service]
   Environment="WEBHOOK_KEY=your_key_here"
-  ExecStart=/usr/bin/python3 /path/to/webhook_proxy.py
+  ExecStart=/usr/bin/python3 /path/to/webhook_proxy_udp.py
         """
     )
-    parser.add_argument('--port', type=int, default=LISTEN_PORT,
-                        help=f'监听端口 (默认: {LISTEN_PORT}，TCP和UDP共用)')
+    parser.add_argument('--port', type=int, default=UDP_LISTEN_PORT,
+                        help=f'UDP监听端口 (默认: {UDP_LISTEN_PORT})')
     parser.add_argument('--webhook-key', help='企业微信Webhook Key')
     parser.add_argument('--config', help='指定config.env路径')
     parser.add_argument('--forward-heartbeat', action='store_true',
@@ -411,52 +320,12 @@ systemd service 配置示例:
     # 加载配置（环境变量 > 命令行 > 配置文件）
     config = load_config(args.config)
 
+    # 优先级：命令行参数 > 环境变量/配置文件
     webhook_key = args.webhook_key
     if not webhook_key:
         webhook_key = config.get('WEBHOOK_KEY', '').strip()
 
-    # 打印启动信息
-    print("=" * 60)
-    print("企业微信Webhook代理服务器（TCP + UDP 整合版）")
-    print("=" * 60)
-    print(f"TCP监听地址: 0.0.0.0:{args.port}")
-    print(f"UDP监听地址: 0.0.0.0:{args.port}")
-    print(f"Webhook目标: {WEIXIN_WEBHOOK_URL}")
-    if webhook_key:
-        masked_key = webhook_key[:8] + "***" + webhook_key[-4:] if len(webhook_key) > 12 else "已配置"
-        print(f"Webhook Key: {masked_key}")
-    else:
-        print(f"Webhook Key: 未配置 (消息只记录日志)")
-    print(f"转发心跳: {'是' if args.forward_heartbeat else '否'}")
-    print()
-    print("TCP模式: 接收CH32V208/ESP8266的HTTP请求")
-    print("UDP模式: 接收BC260的二进制数据包")
-    print()
-    print("按 Ctrl+C 停止服务器")
-    print("=" * 60)
-
-    # 启动TCP和UDP服务器（使用多线程）
-    tcp_thread = threading.Thread(
-        target=run_tcp_server,
-        args=(webhook_key, args.port),
-        daemon=True
-    )
-    udp_thread = threading.Thread(
-        target=run_udp_server,
-        args=(webhook_key, args.port, args.forward_heartbeat),
-        daemon=True
-    )
-
-    tcp_thread.start()
-    udp_thread.start()
-
-    try:
-        # 主线程保持运行
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\n[PROXY] 服务器已停止")
-        sys.exit(0)
+    run_udp_proxy(webhook_key, args.port, forward_heartbeat=args.forward_heartbeat)
 
 
 if __name__ == '__main__':
