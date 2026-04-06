@@ -73,6 +73,9 @@ User/config.h
 *.tmp
 *.orig
 *~
+*.bak
+__pycache__/
+tools/__pycache__/
 
 # OS specific files
 .DS_Store

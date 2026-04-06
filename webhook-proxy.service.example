@@ -1,0 +1,18 @@
+[Unit]
+Description=Webhook Proxy for Water Immersion Alarm
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu
+# 企业微信Webhook Key（必填）
+Environment="WEBHOOK_KEY=your_webhook_key_here"
+# UDP密钥验证（可选，支持多密钥，用逗号分隔）
+Environment="UDP_SECRET_KEY=your_secret_key_here"
+ExecStart=/usr/bin/python3 /home/ubuntu/webhook_proxy.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

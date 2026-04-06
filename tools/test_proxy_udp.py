@@ -29,6 +29,14 @@ import os
 DEFAULT_PROXY_PORT = 8080
 
 
+def get_first_secret_key(config):
+    """从配置中提取首个UDP密钥"""
+    secret_str = config.get('UDP_SECRET_KEY', '').strip()
+    if not secret_str:
+        return ''
+    return next((item.strip() for item in secret_str.split(',') if item.strip()), '')
+
+
 def load_config_from_env(config_path=None):
     """从config.env文件加载配置"""
     if config_path is None:
@@ -107,7 +115,8 @@ def test_udp_connect(proxy_ip, proxy_port, timeout=5):
         return False
 
 
-def test_udp_binary_packet(proxy_ip, proxy_port, msg_type, water_status, flags, adc_value, timeout=10, hex_mode=False):
+def test_udp_binary_packet(proxy_ip, proxy_port, msg_type, water_status, flags, adc_value,
+                           timeout=10, hex_mode=False, udp_secret=''):
     """
     测试发送二进制数据包到UDP代理
     
@@ -121,12 +130,16 @@ def test_udp_binary_packet(proxy_ip, proxy_port, msg_type, water_status, flags, 
     print(f"    类型: {msg_type}, 水浸: {water_status}, 标志: {flags}, ADC: {adc_value}")
 
     payload = encode_payload(msg_type, water_status, flags, adc_value)
-    
+
     if hex_mode:
         # 模拟BC260的HEX模式：将3字节二进制编码为6字节HEX字符串
         payload = payload.hex().encode('ascii')
-    
-    print(f"    载荷: {payload.hex() if isinstance(payload, bytes) else payload} ({len(payload)}字节)")
+
+    if udp_secret:
+        payload = udp_secret.encode('utf-8') + payload
+        print(f"    已附加UDP密钥前缀: {udp_secret[:4]}...")
+
+    print(f"    载荷(HEX): {payload.hex()} ({len(payload)}字节)")
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -189,6 +202,8 @@ def main():
     parser.add_argument('--config', help='指定config.env路径')
     parser.add_argument('--auto-config', action='store_true',
                         help='自动从config.env加载代理配置（使用BC260_PROXY_IP和BC260_PROXY_PORT，UDP与TCP共用端口）')
+    parser.add_argument('--udp-secret',
+                        help='UDP密钥（覆盖配置文件中的UDP_SECRET_KEY，多个密钥时默认取第一个）')
     parser.add_argument('--test-connect-only', action='store_true',
                         help='仅测试UDP连通性，不发送结构化数据')
     parser.add_argument('--water', type=int, default=0, choices=[0, 1],
@@ -212,6 +227,7 @@ def main():
 
     proxy_ip = args.proxy_ip
     proxy_port = args.proxy_port
+    udp_secret = args.udp_secret or ''
 
     if args.auto_config and config:
         config_ip = config.get('BC260_PROXY_IP', '').strip()
@@ -227,6 +243,10 @@ def main():
                 print(f"[+] 从配置加载端口 (BC260_PROXY_PORT): {proxy_port} (UDP与TCP共用)")
             except ValueError:
                 pass
+        if not udp_secret:
+            udp_secret = get_first_secret_key(config)
+            if udp_secret:
+                print(f"[+] 从配置加载UDP密钥 (UDP_SECRET_KEY): {udp_secret[:4]}...")
     elif not args.proxy_ip and config:
         # 非自动模式但无手动指定
         config_ip = config.get('BC260_PROXY_IP', '').strip()
@@ -241,6 +261,10 @@ def main():
                 print(f"[+] 从配置加载UDP端口 (UDP_PROXY_PORT): {proxy_port}")
             except ValueError:
                 pass
+        if not udp_secret:
+            udp_secret = get_first_secret_key(config)
+            if udp_secret:
+                print(f"[+] 从配置加载UDP密钥 (UDP_SECRET_KEY): {udp_secret[:4]}...")
 
     if not proxy_ip:
         proxy_ip = '127.0.0.1'
@@ -254,6 +278,7 @@ def main():
     print("测试配置:")
     print(f"  UDP代理服务器: {proxy_ip}:{proxy_port}")
     print(f"  发送模式: {'HEX字符串(模拟BC260)' if args.hex_mode else '原始二进制'}")
+    print(f"  UDP密钥: {'已配置' if udp_secret else '未配置'}")
     if not args.test_connect_only:
         print(f"  测试载荷: type={args.type}, water={args.water}, adc={args.adc}, flags={args.flags}")
     print("-"*60)
@@ -272,7 +297,8 @@ def main():
         results['send_binary'] = test_udp_binary_packet(
             proxy_ip, proxy_port,
             args.type, args.water, args.flags, args.adc,
-            hex_mode=args.hex_mode
+            hex_mode=args.hex_mode,
+            udp_secret=udp_secret
         )
 
     # 打印测试摘要

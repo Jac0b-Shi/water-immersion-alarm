@@ -60,6 +60,14 @@ DEFAULT_PROXY_IP = "127.0.0.1"
 DEFAULT_PROXY_PORT = 8080
 
 
+def get_first_secret_key(config):
+    """从配置中提取首个UDP密钥"""
+    secret_str = config.get('UDP_SECRET_KEY', '').strip()
+    if not secret_str:
+        return ''
+    return next((item.strip() for item in secret_str.split(',') if item.strip()), '')
+
+
 def load_config_from_env(config_path=None):
     """从config.env文件加载配置"""
     if config_path is None:
@@ -119,17 +127,20 @@ def encode_payload(msg_type, water_status, flags, adc_value):
 class BC260UDPTester:
     """BC260 NB-IoT模块UDP测试类"""
 
-    def __init__(self, port, baudrate=115200, timeout=5, proxy_ip=None, proxy_port=None, verbose=False):
+    def __init__(self, port, baudrate=115200, timeout=5, proxy_ip=None, proxy_port=None,
+                 udp_secret='', verbose=False):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.proxy_ip = proxy_ip or DEFAULT_PROXY_IP
         self.proxy_port = proxy_port or DEFAULT_PROXY_PORT
+        self.udp_secret = udp_secret or ''
         self.verbose = verbose
         self.ser = None
         self.network_attached = False
         self.socket_created = False
         self._urc_buffer = []  # 存储URC消息，供跨方法使用
+        self.imei = None
 
     def connect(self):
         """连接串口"""
@@ -239,7 +250,8 @@ class BC260UDPTester:
         if success:
             match = re.search(r'\+CGSN:\s*(\d+)', response)
             if match:
-                print(f"[+] IMEI: {match.group(1)}")
+                self.imei = match.group(1)
+                print(f"[+] IMEI: {self.imei}")
         self.send_at_command("ATE0", "OK", timeout=2)
         return True
 
@@ -390,6 +402,20 @@ class BC260UDPTester:
         self.socket_created = False
         time.sleep(1)
 
+    def build_udp_send_data(self, payload_bytes):
+        """构造与 webhook_proxy.py 兼容的UDP发送内容"""
+        payload_hex = payload_bytes.hex()
+        parts = []
+
+        if self.imei:
+            parts.append(f"{self.imei}:")
+
+        if self.udp_secret:
+            parts.append(self.udp_secret)
+
+        parts.append(payload_hex)
+        return ''.join(parts)
+
     def send_udp_binary(self, payload_bytes):
         """
         通过UDP发送二进制数据
@@ -406,8 +432,12 @@ class BC260UDPTester:
         # 文本模式下直接发送原始字节（但UDP套接字可能不支持二进制0x00）
         # 将数据转为可打印字符，或使用HEX字符串
         # 这里使用HEX字符串便于代理解析
-        send_data = payload_bytes.hex()
+        send_data = self.build_udp_send_data(payload_bytes)
         data_len = len(send_data)
+        if self.udp_secret:
+            print(f"[*] 已附加UDP密钥前缀: {self.udp_secret[:4]}...")
+        if self.imei:
+            print(f"[*] 已附加设备IMEI前缀: {self.imei}")
 
         # 步骤1: 发送 AT+QISEND，等待 ">" 提示
         prompt_received = False
@@ -713,6 +743,8 @@ def main():
     parser.add_argument('--proxy-port', type=int, default=DEFAULT_PROXY_PORT, help=f'UDP代理端口 (默认: {DEFAULT_PROXY_PORT}，与TCP代理共用)')
     parser.add_argument('--config', help='指定config.env路径')
     parser.add_argument('--auto-config', action='store_true', help='自动从config.env加载配置')
+    parser.add_argument('--udp-secret',
+                        help='UDP密钥（覆盖配置文件中的UDP_SECRET_KEY，多个密钥时默认取第一个）')
     parser.add_argument('--verbose', action='store_true', help='详细调试模式')
     parser.add_argument('--list', action='store_true', help='列出可用串口')
     parser.add_argument('--water', type=int, default=0, choices=[0, 1], help='水浸状态 (0=无水, 1=有水)')
@@ -734,6 +766,7 @@ def main():
 
     proxy_ip = args.proxy_ip
     proxy_port = args.proxy_port
+    udp_secret = args.udp_secret or ''
 
     if args.auto_config or args.config:
         config = load_config_from_env(args.config)
@@ -753,12 +786,17 @@ def main():
                     print(f"[+] 从配置加载代理端口 (BC260_PROXY_PORT): {proxy_port} (UDP与TCP共用)")
                 except ValueError:
                     pass
+            if not udp_secret:
+                udp_secret = get_first_secret_key(config)
+                if udp_secret:
+                    print(f"[+] 从配置加载UDP密钥 (UDP_SECRET_KEY): {udp_secret[:4]}...")
 
     print("\n" + "-"*50)
     print("UDP测试配置:")
     print(f"  串口: {args.port}")
     print(f"  波特率: {args.baudrate}")
     print(f"  UDP代理: {proxy_ip}:{proxy_port}")
+    print(f"  UDP密钥: {'已配置' if udp_secret else '未配置'}")
     print(f"  消息类型: {args.type}, 水浸: {args.water}, ADC: {args.adc}, flags: {args.flags}")
     print("-"*50 + "\n")
 
@@ -767,6 +805,7 @@ def main():
         baudrate=args.baudrate,
         proxy_ip=proxy_ip,
         proxy_port=proxy_port,
+        udp_secret=udp_secret,
         verbose=args.verbose
     )
 

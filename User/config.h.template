@@ -9,9 +9,9 @@
 #ifndef __CONFIG_H
 #define __CONFIG_H
 
-/* WiFi配置 */
-#define WIFI_SSID "your_wifi_ssid"
-#define WIFI_PASSWORD "your_wifi_password"
+/* ESP8266 支持已弃用，不再维护 */
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
 
 /* 企业微信Webhook配置 */
 #define WEBHOOK_KEY "your_wechat_webhook_key"
@@ -31,9 +31,9 @@
  * 1=启用（编译相关代码）, 0=禁用（不编译相关代码）
  * ======================================== */
 
-/* ESP8266 WiFi模块（USART3: PB10-TX, PB11-RX, PB12-RST） */
+/* ESP8266 WiFi模块（已弃用，不再维护） */
 #ifndef ENABLE_ESP8266
-#define ENABLE_ESP8266 1
+#define ENABLE_ESP8266 0
 #endif
 
 /* BC260 NB-IoT模块（USART2: PA2-TX, PA3-RX, PA1-RST） */

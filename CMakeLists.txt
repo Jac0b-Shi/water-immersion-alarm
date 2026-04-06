@@ -89,6 +89,8 @@ endif ()
 # 设置项目名称和使用的语言
 project(water-immersion-alarm C CXX ASM)
 
+message(STATUS "Compile target: CH32V208WBU6")
+
 # 设置C++标准为C++17
 set(CMAKE_CXX_STANDARD 17)
 
@@ -170,6 +172,17 @@ file(GLOB_RECURSE SOURCES
 )
 list(REMOVE_ITEM SOURCES ${CMAKE_SOURCE_DIR}/FreeRTOS/portable/Common/mpu_wrappers.c)
 
+# Keep optional communication drivers aligned with the generated config to avoid
+# compiling empty translation units when a module is disabled.
+set(GENERATED_CONFIG_H ${CMAKE_SOURCE_DIR}/User/config.h)
+if(EXISTS ${GENERATED_CONFIG_H})
+    file(STRINGS ${GENERATED_CONFIG_H} ETHERNET_CONFIG_LINE REGEX "^#define ENABLE_ETHERNET [01]$")
+    if(ETHERNET_CONFIG_LINE MATCHES "^#define ENABLE_ETHERNET 0$")
+        list(REMOVE_ITEM SOURCES ${CMAKE_SOURCE_DIR}/User/eth_driver.c)
+        message(STATUS "Ethernet support disabled in User/config.h; excluding User/eth_driver.c")
+    endif()
+endif()
+
 # 设置链接脚本的路径
 set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/Ld/Link.ld)
 
@@ -191,7 +204,7 @@ add_link_options(-T ${LINKER_SCRIPT})
 # 编译可执行文件
 add_executable(${PROJECT_NAME}.elf ${SOURCES} ${LINKER_SCRIPT})
 
-# 链接网络协议栈静态库
+# 当前仅维护 CH32V208 平台
 target_link_libraries(${PROJECT_NAME}.elf ${CMAKE_SOURCE_DIR}/User/libwchnet.a)
 
 # 设置输出文件的变量

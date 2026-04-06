@@ -1,10 +1,20 @@
 # 浸水检测报警系统
 
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
-[![Platform](https://img.shields.io/badge/Platform-CH32V20x-green.svg)](https://www.wch.cn/)
+[![Platform](https://img.shields.io/badge/Platform-CH32V208-green.svg)](https://www.wch.cn/)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://gitee.com/SHU-SPE-Sandrone/water-immersion-alarm)
 
-基于CH32V20x系列RISC-V微控制器的多功能浸水检测报警系统，支持多种通信方式和实时监测功能。
+基于 CH32V208WBU6 的浸水检测报警系统，当前维护 `BC260 NB-IoT` 与 `CH32V208 内置以太网` 两种通信方式。
+
+> 当前维护范围不包含 ESP8266。代码中仍保留部分历史条件编译分支，但不再作为有效功能路径维护。
+
+## 当前状态
+
+- 维护目标：`CH32V208WBU6`
+- RTOS：`FreeRTOS`
+- 通信路径：`BC260 NB-IoT`、`内置以太网`
+- 配置流程：`config.env -> generate_config.py -> User/config.h -> 重新编译`
+- 推送方式：设备通过 HTTP 代理转发到企业微信 HTTPS Webhook
 
 ## 🚀 版本更新 (V1.2.0)
 
@@ -19,7 +29,7 @@
 ### V1.1.0 新增功能
 - ✅ **CH32V208内置以太网支持** - 直接RJ45连接，无需额外WiFi模块
 - ✅ **HTTP代理转发功能** - 解决以太网无法直接访问HTTPS的问题
-- ✅ **模块化通信架构** - 可灵活选择ESP8266、BC260 NB-IoT或以太网
+- ✅ **模块化通信架构** - 当前维护 BC260 NB-IoT 与内置以太网
 - ✅ **增强的调试功能** - 更丰富的日志输出和状态监控
 
 ### 技术改进
@@ -33,34 +43,32 @@
 ### 核心功能
 - 🌊 **实时浸水检测**：通过ADC模拟量输入检测水位，阈值可配置（默认1000mV）
 - 💡 **双LED状态指示**：共阳极LED分别指示正常/报警状态
-- 📱 **企业微信推送**：通过ESP8266 WiFi/BC260 NB-IoT/以太网推送报警信息
+- 📱 **企业微信推送**：通过BC260 NB-IoT或内置以太网推送报警信息
 - 🔄 **自动状态管理**：智能检测浸水/解除状态变化，避免重复报警
 
 ### 通信功能
 - **USART1**：调试信息输出（115200波特率）
 - **USART2**：BC260 NB-IoT AT指令通信（9600波特率）
-- **USART3**：ESP8266 AT指令通信（115200波特率，DMA模式）
 - **内置以太网**：CH32V208特有10M以太网（需HTTP代理）
-- **多模块支持**：可灵活选择WiFi/NB-IoT/以太网通信方式
+- **多模块支持**：当前维护 NB-IoT/以太网两种通信方式
 
 ### 系统特性
 - ⚡ **FreeRTOS支持**：基于实时操作系统，系统响应快速稳定
-- 🔌 **硬件复位控制**：可通过GPIO控制ESP8266硬件复位
-- 📊 **状态监控**：实时显示WiFi连接状态、IP地址、信号强度
+- 🔌 **硬件复位控制**：可通过GPIO控制BC260硬件复位
+- 📊 **状态监控**：输出传感器状态、网络附着状态、链路状态和调试日志
 - 🔍 **详细调试信息**：可选的详细日志输出，便于开发调试
 
 ## 硬件要求
 
 ### 主控芯片
-- **型号**：CH32V208WBU6 (推荐) 或 CH32V203C8T6
+- **型号**：CH32V208WBU6
 - **架构**：RISC-V 32位内核
 - **主频**：120MHz
 - **Flash**：480KB
 - **RAM**：64KB
 - **特性**：CH32V208支持内置10M以太网
 
-### 外设模块（三选一或组合使用）
-- **WiFi模块**：ESP01S (ESP8266芯片)（AT固件v2.2.0及以上）
+### 外设模块
 - **NB-IoT模块**：Quectel BC260Y-CN（支持移动/电信NB-IoT网络）
 - **以太网**：CH32V208内置10M以太网 + RJ45接口
 - **浸水传感器**：模拟量输出型（0-3.3V）
@@ -81,9 +89,6 @@
 | **BC260 TX** | PA2 | USART2发送数据到BC260 |
 | **BC260 RX** | PA3 | USART2接收BC260数据 |
 | **BC260复位** | PA1 | GPIO输出，高电平复位 |
-| **ESP8266 TX** | PB10 | USART3接收ESP8266数据 |
-| **ESP8266 RX** | PB11 | USART3发送数据到ESP8266 |
-| **ESP8266复位** | PB12 | GPIO输出，低电平复位 |
 
 ### BC260 NB-IoT连接
 
@@ -96,18 +101,7 @@
 | GND       | GND        | 地 |
 | SIM卡     | -          | 插入NB-IoT专用SIM卡 |
 
-> **注意**：BC260的RESET_N引脚是**高电平复位**，与ESP8266的低电平复位不同。
-
-### ESP8266连接
-
-| ESP8266引脚 | CH32V208引脚 | 说明 |
-|-----------|------------|------|
-| TX        | PB11       | 串口发送（接MCU RX） |
-| RX        | PB10       | 串口接收（接MCU TX） |
-| RST       | PB12       | 硬件复位（低电平有效） |
-| VCC       | 3.3V       | 电源（需要足够电流） |
-| GND       | GND        | 地 |
-| GPIO0     | 悬空/GND     | 使能引脚 |
+> **注意**：BC260 的 RESET_N 引脚是高电平复位。
 
 ## 软件环境
 
@@ -143,13 +137,9 @@ cp config.env.example config.env
 # Linux/Mac: nano config.env
 ```
 
-配置文件内容：
+配置文件内容示例：
 
 ```env
-# WiFi 配置（使用ESP8266时填写）
-WIFI_SSID=你的WiFi名称
-WIFI_PASSWORD=你的WiFi密码
-
 # 企业微信 Webhook 配置
 WEBHOOK_KEY=你的企业微信机器人Key
 
@@ -163,9 +153,12 @@ HTTP_PROXY_IP=192.168.1.100
 HTTP_PROXY_PORT=8080
 
 # 模块启用开关
-ENABLE_ESP8266=0    # 1=启用ESP8266 WiFi模块
+ENABLE_ESP8266=0    # 已弃用，不建议启用
 ENABLE_BC260=1      # 1=启用BC260 NB-IoT模块
 ENABLE_ETHERNET=0   # 1=启用内置以太网
+
+# UDP密钥验证（建议生产环境启用）
+UDP_SECRET_KEY=your_secret_key_here
 ```
 
 生成配置头文件：
@@ -177,7 +170,7 @@ python generate_config.py config.env User/config.h
 
 > **注意**：`config.env` 和 `User/config.h` 已添加到 `.gitignore`，不会被提交到版本控制系统。
 
-其他可选配置（在 `User/main.c` 中）：
+其他编译期参数（在 `User/main.c` 中）：
 
 ```c
 // 浸水检测阈值（单位：mV）
@@ -200,6 +193,8 @@ cmake -B build -G Ninja
 cmake --build build --target water-immersion-alarm.elf
 ```
 
+> 配置阶段会输出 `Compile target: CH32V208WBU6`。如果修改了 `config.env`，请先重新生成 `User/config.h`，必要时重新运行 CMake 配置。
+
 #### 使用CLion
 1. 打开项目
 2. 选择配置：`RelWithDebInfo-RISC-V (WCH Toolchain)`
@@ -214,7 +209,7 @@ D:\MounRiver\MounRiver_Studio2\resources\app\resources\win32\components\WCH\Tool
 
 ### 4. 烧录固件
 
-使用WCH-Link工具烧录生成的 `.hex` 或 `.elf` 文件到CH32V203。
+使用WCH-Link工具烧录生成的 `.hex` 或 `.elf` 文件到 CH32V208。
 
 ### 5. 查看运行状态
 
@@ -225,14 +220,6 @@ D:\MounRiver\MounRiver_Studio2\resources\app\resources\win32\components\WCH\Tool
 ### 系统启动流程
 
 根据启用的通信模块，启动流程如下：
-
-**ESP8266模式：**
-1. **初始化硬件**：GPIO、ADC、USART等外设
-2. **ESP8266初始化**：硬件复位、AT指令测试
-3. **WiFi连接**：自动连接配置的WiFi网络
-4. **获取IP地址**：显示分配的IP和MAC地址
-5. **发送启动通知**：通过企业微信推送系统启动消息
-6. **进入监测循环**：每5秒检测一次浸水状态
 
 **BC260 NB-IoT模式：**
 1. **初始化硬件**：GPIO、ADC、USART1/2等外设
@@ -263,7 +250,7 @@ D:\MounRiver\MounRiver_Studio2\resources\app\resources\win32\components\WCH\Tool
 ```
 【系统启动】
 浸水检测系统已成功启动
-WiFi: 你的WiFi名称
+通信方式: BC260 或 Ethernet
 阈值: 1000mV
 状态: 正常运行
 ```
@@ -278,14 +265,97 @@ WiFi: 你的WiFi名称
 【解除警报】浸水情况已解除，当前电压：500mV
 ```
 
+## 代理服务器部署
+
+由于CH32V208和BC260不支持SSL/TLS，需要通过HTTP代理服务器转发HTTPS请求到企业微信。
+
+### 使用Systemd部署（推荐）
+
+#### 1. 复制代理脚本到服务器
+
+```bash
+# 将 webhook_proxy.py 复制到服务器
+scp tools/webhook_proxy.py ubuntu@your-server:/home/ubuntu/
+```
+
+#### 2. 创建Systemd服务文件
+
+```bash
+sudo nano /etc/systemd/system/webhook-proxy.service
+```
+
+写入以下内容（替换为你的实际配置）：
+
+```ini
+[Unit]
+Description=Webhook Proxy for Water Immersion Alarm
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu
+Environment="WEBHOOK_KEY=your_webhook_key_here"
+Environment="UDP_SECRET_KEY=your_secret_key_here"
+ExecStart=/usr/bin/python3 /home/ubuntu/webhook_proxy.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### 3. 多密钥配置（多设备场景）
+
+支持多个传感器使用不同密钥，用逗号分隔：
+
+```ini
+Environment="UDP_SECRET_KEY=DEVICE_A_KEY,DEVICE_B_KEY,DEVICE_C_KEY"
+```
+
+#### 4. 启动和管理服务
+
+```bash
+# 重新加载systemd配置
+sudo systemctl daemon-reload
+
+# 设置开机自启
+sudo systemctl enable webhook-proxy.service
+
+# 启动服务
+sudo systemctl start webhook-proxy.service
+
+# 查看状态
+sudo systemctl status webhook-proxy.service
+
+# 查看实时日志
+sudo journalctl -u webhook-proxy.service -f
+
+# 重启服务
+sudo systemctl restart webhook-proxy.service
+
+# 停止服务
+sudo systemctl stop webhook-proxy.service
+```
+
+### UDP密钥验证
+
+为防止伪造消息，建议启用UDP密钥验证：
+
+1. **服务器配置**：在 `config.env` 或 systemd 环境变量中设置 `UDP_SECRET_KEY`
+2. **设备配置**：每个设备在 `config.env` 中配置对应的密钥
+3. **数据包格式**：`[IMEI]:[密钥][3字节HEX数据]`，例如 `869999051234567:MYKEY089209`
+
+消息中包含设备IMEI，企业微信推送会显示设备标识，方便识别多个传感器。
+
 ## 调试信息
 
 ### 启用详细日志
 
-在 `main.c` 中取消注释：
+在 `User/main.c` 中修改：
 
 ```c
-#define DEBUG_VERBOSE  // 启用详细调试信息
+#define DEBUG_MODE 1  // 启用详细调试输出
 ```
 
 ### 日志级别
@@ -296,13 +366,6 @@ WiFi: 你的WiFi名称
 - `[ERROR]`：错误信息
 
 ## 常见问题
-
-### Q: ESP8266无法连接？
-A: 
-1. 检查串口连接是否正确（TX-RX交叉）
-2. 确认ESP8266供电充足（建议单独供电）
-3. 检查AT固件版本（需2.2.0+）
-4. 查看串口波特率是否为115200
 
 ### Q: BC260初始化失败？
 A:
@@ -335,19 +398,12 @@ A:
 4. 使用`tools/bc260_test.py`脚本单独测试通信
 5. 检查串口日志中的HTTP响应内容
 
-### Q: WiFi连接失败？
-A:
-1. 确认SSID和密码配置正确
-2. 检查WiFi信号强度
-3. 确认路由器支持2.4GHz频段
-4. 查看ESP8266是否已保存旧的WiFi配置
-
 ### Q: 消息推送失败？
 A:
 1. 检查企业微信Webhook Key是否正确
-2. 确认网络连接正常
-3. 查看SSL连接是否成功建立
-4. 检查ESP8266固件是否支持SSL
+2. 检查网络连接和代理服务是否正常
+3. 确认 `config.env` 中代理地址、端口和密钥配置正确
+4. 查看串口日志中的 HTTP 响应、附着状态或链路状态
 
 ### Q: 误报警？
 A:
@@ -359,9 +415,9 @@ A:
 ## 技术特点
 
 ### DMA通信
-- USART3采用DMA接收模式，提高数据接收效率
-- 256字节循环缓冲区，避免数据丢失
-- 自动处理ESP8266的多行响应
+- 串口收发采用 DMA/缓冲区机制，降低 CPU 轮询开销
+- 使用固定大小缓冲区避免连续响应丢包
+- 配合调试日志便于分析 AT 响应和网络收发行为
 
 ### 状态管理
 - 智能状态机管理浸水检测
@@ -386,7 +442,7 @@ A:
 2. 点击群聊右上角 `...` -> `群机器人` -> `添加机器人`
 3. 填写机器人名称和头像
 4. 获取 Webhook 地址（格式：`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx`）
-5. 复制 `key=` 后面的字符串，填入代码中的 `WECOM_WEBHOOK_KEY`
+5. 复制 `key=` 后面的字符串，填入 `config.env` 中的 `WEBHOOK_KEY`
 
 ### 测试机器人
 
@@ -405,27 +461,14 @@ curl 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=你的key' \
 
 ## 技术细节
 
-### DMA接收机制
+### 代理转发模型
 
-系统使用DMA1_Channel3实现USART3的高效数据接收：
+设备端不直接访问企业微信 HTTPS 接口，而是先将 HTTP/UDP 请求发送到代理，再由代理转发到企业微信：
 
-- **循环缓冲区**：256字节环形缓冲区
-- **自动接收**：无需CPU干预，DMA自动搬运数据
-- **实时监控**：通过`DMA_GetCurrDataCounter`实时获取接收进度
-- **响应检测**：自动识别`\r\n`结束符、`OK`、`ERROR`等响应
-
-### SSL/TLS连接
-
-ESP8266建立HTTPS连接的过程：
-
-1. DNS解析域名（自动完成）
-2. TCP三次握手
-3. SSL/TLS握手（需要3-5秒）
-4. 发送HTTP请求
-5. 接收服务器响应
-6. 关闭连接
-
-**注意**：SSL握手比普通TCP连接慢，需要给予足够超时时间。
+1. 设备采集状态并生成消息
+2. 通过 BC260 或以太网发送到代理
+3. 代理校验密钥并解析设备标识
+4. 代理转发到企业微信 Webhook
 
 ### 状态防抖算法
 
@@ -448,62 +491,15 @@ ADC值 = 电压值 × 4095 / 3300
 
 ## 性能指标
 
-| 指标 | WiFi模式 | NB-IoT模式 | 以太网模式 |
-|------|----------|------------|------------|
-| 检测周期 | 5秒 | 5秒 | 5秒 |
-| 响应时间 | <10秒 | 10-30秒 | <5秒 |
-| ADC分辨率 | 12位 | 12位 | 12位 |
-| 电压测量范围 | 0-3.3V | 0-3.3V | 0-3.3V |
-| 测量精度 | ±50mV | ±50mV | ±50mV |
-| 网络连接时间 | 3-10秒 | 30-60秒 | 即时 |
-| SSL/HTTPS支持 | 硬件支持 | 需HTTP代理 | 需HTTP代理 |
-| 消息推送时间 | 1-3秒 | 5-15秒 | 1-2秒 |
-| 功耗 | 较高 | 极低 | 低 |
-| 适用场景 | 有WiFi覆盖 | 无WiF/野外 | 有网线部署 |
-
-## 常见问题
-
-### Q: ESP8266无法连接？
-A: 
-1. 检查串口连接是否正确（TX-RX交叉）
-2. 确认ESP8266供电充足（建议单独供电）
-3. 检查AT固件版本（需2.2.0+）
-4. 查看串口波特率是否为115200
-
-### Q: WiFi连接失败？
-A:
-1. 确认SSID和密码配置正确
-2. 检查WiFi信号强度
-3. 确认路由器支持2.4GHz频段
-4. 查看ESP8266是否已保存旧的WiFi配置
-
-### Q: 消息推送失败？
-A:
-1. 检查企业微信Webhook Key是否正确
-2. 确认网络连接正常
-3. 查看SSL连接是否成功建立
-4. 检查ESP8266固件是否支持SSL
-
-### Q: 误报警？
-A:
-1. 调整 `WATER_THRESHOLD_MV` 阈值
-2. 检查传感器接线
-3. 确认传感器工作正常
-4. 避免电磁干扰
-
-### Q: 串口无输出？
-A:
-1. 检查波特率是否为115200
-2. 确认PA9(TX)已正确连接
-3. 查看是否选择了SDI模式（需要WCH-Link）
-4. 重新烧录固件
-
-### Q: LED不亮？
-A:
-1. 确认LED极性正确（共阳极）
-2. 检查限流电阻是否合适
-3. 测量PB0、PB1引脚电平
-4. 检查GPIO初始化代码
+| 指标 | BC260 模式 | 以太网模式 |
+|------|------------|------------|
+| 检测周期 | 5秒 | 5秒 |
+| ADC分辨率 | 12位 | 12位 |
+| 电压测量范围 | 0-3.3V | 0-3.3V |
+| 响应时间 | 10-30秒 | <5秒 |
+| 网络建立时间 | 30-60秒 | 即时 |
+| HTTPS能力 | 需HTTP代理 | 需HTTP代理 |
+| 典型场景 | 无有线网络、远程部署 | 有局域网或固定布线 |
 
 ## 调试技巧
 
@@ -569,25 +565,12 @@ BC260_SendCommand("AT+QISTATE?", "OK", 3000);
 BC260_SendCommand("AT+QICLOSE=0", "OK", 5000);
 ```
 
-### 5. ESP8266调试命令
-
-```c
-// 查询连接状态
-ESP8266_SendCommand("AT+CIPSTATUS", 2000);
-
-// 测试网络连通性
-ESP8266_SendCommand("AT+PING=\"www.baidu.com\"", 5000);
-
-// 查看WiFi连接状态
-ESP8266_SendCommand("AT+CWJAP?", 3000);
-```
-
 ## 优化建议
 
 ### 降低功耗
 1. 延长检测间隔（修改`CHECK_INTERVAL_MS`）
 2. 使用低功耗模式（需要硬件支持）
-3. 按需激活ESP8266（使用硬件复位控制）
+3. 按需启停通信模块，减少无效网络建立
 
 ### 提高稳定性
 1. 增加看门狗定时器
@@ -670,13 +653,12 @@ water-immersion-alarm/
 
 Copyright (c) 2025 SHU-SPE-Sandrone
 
-基于WCH官方CH32V203示例代码修改而来。
+基于WCH官方 CH32V20x 示例代码修改而来，当前仅维护 CH32V208 目标。
 Original work Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
 
 ## 致谢
 
-- [WCH](https://www.wch.cn/) - CH32V208/CH32V203芯片和开发工具
-- [Espressif](https://www.espressif.com/) - ESP8266 WiFi模块
+- [WCH](https://www.wch.cn/) - CH32V208芯片和开发工具
 - [Quectel](https://www.quectel.com/) - BC260 NB-IoT模块
 - [FreeRTOS](https://www.freertos.org/) - 实时操作系统
 
@@ -690,12 +672,11 @@ Original work Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
 
 **⚠️ 安全提示**：
 - `config.env` 包含敏感信息，已添加到 `.gitignore`，切勿上传到公开仓库
-- 定期更换WiFi密码和Webhook Key
+- 定期更换 Webhook Key 和 UDP 密钥
 - 生产环境使用时请做好备份和容错措施
 - 本项目仅供学习交流使用，请根据实际情况评估安全性后再用于生产环境
 
 **⚠️ 硬件注意事项**：
 - **BC260 RST引脚**：高电平复位，确保有下拉电阻（建议10KΩ）保持默认低电平
-- **ESP8266 RST引脚**：低电平复位，确保有上拉电阻（建议10KΩ）保持默认高电平
-- **电源稳定性**：BC260和ESP8266峰值电流较大，建议使用独立LDO供电
+- **电源稳定性**：BC260 峰值电流较大，建议使用独立 LDO 供电
 - **SIM卡安全**：NB-IoT SIM卡与设备绑定，请妥善保管

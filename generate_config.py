@@ -34,7 +34,7 @@ def read_config(config_file):
 
 def validate_config(config):
     """验证配置项"""
-    required_keys = ['WIFI_SSID', 'WIFI_PASSWORD', 'WEBHOOK_KEY']
+    required_keys = ['WEBHOOK_KEY']
 
     for key in required_keys:
         if key not in config or not config[key]:
@@ -42,9 +42,13 @@ def validate_config(config):
             return False
 
         # 检查是否为示例值
-        if config[key] in ['你的WiFi名称', '你的WiFi密码', '你的webhook_key']:
+        if config[key] in ['你的webhook_key']:
             print(f"错误: 配置项 {key} 仍为示例值，请修改为实际值!")
             return False
+
+    if config.get('ENABLE_ESP8266', '0') == '1':
+        print("错误: ESP8266 支持已弃用，不再维护，请改用 BC260 或以太网。")
+        return False
 
     return True
 
@@ -70,9 +74,9 @@ def generate_header(config, output_file):
 #ifndef __CONFIG_H
 #define __CONFIG_H
 
-/* WiFi配置 */
-#define WIFI_SSID "{config['WIFI_SSID']}"
-#define WIFI_PASSWORD "{config['WIFI_PASSWORD']}"
+/* ESP8266 支持已弃用，不再维护 */
+#define WIFI_SSID "{config.get('WIFI_SSID', '')}"
+#define WIFI_PASSWORD "{config.get('WIFI_PASSWORD', '')}"
 
 /* 企业微信Webhook配置 */
 #define WEBHOOK_KEY "{config['WEBHOOK_KEY']}"
@@ -92,9 +96,9 @@ def generate_header(config, output_file):
  * 1=启用（编译相关代码）, 0=禁用（不编译相关代码）
  * ======================================== */
 
-/* ESP8266 WiFi模块（USART3: PB10-TX, PB11-RX, PB12-RST） */
+/* ESP8266 WiFi模块（已弃用，不再维护） */
 #ifndef ENABLE_ESP8266
-#define ENABLE_ESP8266 {config.get('ENABLE_ESP8266', '1')}
+#define ENABLE_ESP8266 0
 #endif
 
 /* BC260 NB-IoT模块（USART2: PA2-TX, PA3-RX, PA1-RST） */
@@ -141,6 +145,11 @@ def generate_header(config, output_file):
 #define BC260_PROXY_IP   {{ {ip_to_array(config.get('BC260_PROXY_IP', '0.0.0.0'))} }}
 #define BC260_PROXY_PORT {config.get('BC260_PROXY_PORT', '8080')}
 
+/* UDP密钥验证配置（防止伪造消息） */
+/* 设置一个密钥字符串，发送的数据包会以此密钥开头 */
+/* 必须与代理服务器 config.env 中的 UDP_SECRET_KEY 一致 */
+#define UDP_SECRET_KEY "{config.get('UDP_SECRET_KEY', '')}"
+
 #endif /* ENABLE_BC260 */
 
 #endif /* __CONFIG_H */
@@ -154,8 +163,8 @@ def generate_header(config, output_file):
 def main():
     # 确定路径
     script_dir = Path(__file__).parent
-    config_file = script_dir / 'config.env'
-    output_file = script_dir / 'User' / 'config.h'
+    config_file = Path(sys.argv[1]) if len(sys.argv) >= 2 else script_dir / 'config.env'
+    output_file = Path(sys.argv[2]) if len(sys.argv) >= 3 else script_dir / 'User' / 'config.h'
 
     print("=" * 50)
     print("浸水检测报警系统 - 配置文件生成器")
