@@ -10,9 +10,13 @@
 
 二进制协议定义 (3字节):
   字节0: 状态字节
-    - bit 0: water_status (0=无水, 1=有水)
+    - bit 0: 传感器状态
+      * 浸水传感器: water_status (0=无水, 1=有水)
+      * 超声波传感器: high_level_status (0=正常, 1=高液位)
     - bits 2-1: flags (01=低电量, 10=传感器故障)
-    - bits 5-3: msg_type (000=心跳, 001=状态变化, 010=电压上报, 011=系统启动)
+    - bits 5-3: msg_type
+      * 0xx: 浸水传感器数据包
+      * 1xx: 超声波液位数据包
     - bits 7-6: 保留
   字节1: ADC值低8位
   字节2: ADC值高8位
@@ -248,12 +252,20 @@ def decode_binary_payload(data: bytes) -> dict | None:
     water_status = status_byte & 0x01
     flags = (status_byte >> 1) & 0x03
     msg_type = (status_byte >> 3) & 0x07
+    sensor_type = "ultrasonic" if (msg_type & 0x04) else "immersion"
+    event_type = msg_type & 0x03
 
-    msg_type_names = {
-        0: "心跳",
-        1: "状态变化",
-        2: "电压上报",
-        3: "系统启动",
+    immersion_type_names = {
+        0: "浸水心跳",
+        1: "浸水状态变化",
+        2: "浸水电压上报",
+        3: "浸水系统启动",
+    }
+    ultrasonic_type_names = {
+        0: "超声波心跳",
+        1: "超声波高液位上报",
+        2: "超声波定时上报",
+        3: "超声波系统启动",
     }
 
     flag_names = []
@@ -266,14 +278,25 @@ def decode_binary_payload(data: bytes) -> dict | None:
     voltage = (adc_raw / 4095.0) * 3.3 if adc_raw <= 4095 else None
 
     return {
+        "sensor_type": sensor_type,
+        "sensor_type_name": "超声波液位" if sensor_type == "ultrasonic" else "浸水",
+        "event_type": event_type,
         "msg_type": msg_type,
-        "msg_type_name": msg_type_names.get(msg_type, f"未知类型({msg_type})"),
+        "msg_type_name": (
+            ultrasonic_type_names.get(event_type, f"未知超声类型({msg_type})")
+            if sensor_type == "ultrasonic"
+            else immersion_type_names.get(event_type, f"未知浸水类型({msg_type})")
+        ),
         "water_status": water_status,
-        "water_status_text": "有水" if water_status else "无水",
+        "water_status_text": (
+            "高液位" if water_status else "液位正常"
+        ) if sensor_type == "ultrasonic" else ("有水" if water_status else "无水"),
         "flags": flags,
         "flag_names": flag_names,
         "adc_raw": adc_raw,
         "voltage": voltage,
+        "measurement_value": adc_raw,
+        "distance_mm": adc_raw if sensor_type == "ultrasonic" else None,
         "raw_hex": data[:3].hex()
     }
 
@@ -319,13 +342,17 @@ def format_udp_message(client_addr, decoded, packet_size, device_id=None):
     ]
     if device_id:
         lines.append(f"设备ID: {device_id}")
-    lines.extend([
-        f"类型: {decoded['msg_type_name']}",
-        f"水浸状态: {decoded['water_status_text']}",
-        f"ADC原始值: {decoded['adc_raw']}",
-    ])
-    if decoded['voltage'] is not None:
-        lines.append(f"估算电压: {decoded['voltage']:.3f}V")
+    lines.append(f"传感器类型: {decoded['sensor_type_name']}")
+    lines.append(f"类型: {decoded['msg_type_name']}")
+
+    if decoded['sensor_type'] == 'ultrasonic':
+        lines.append(f"测距值: {decoded['distance_mm']}mm")
+        lines.append(f"液位告警状态: {decoded['water_status_text']}")
+    else:
+        lines.append(f"水浸状态: {decoded['water_status_text']}")
+        lines.append(f"ADC原始值: {decoded['adc_raw']}")
+        if decoded['voltage'] is not None:
+            lines.append(f"估算电压: {decoded['voltage']:.3f}V")
     if decoded['flag_names']:
         lines.append(f"设备标志: {', '.join(decoded['flag_names'])}")
     lines.append(f"原始数据: {decoded['raw_hex']}")

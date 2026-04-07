@@ -10,22 +10,74 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE "STATIC_LIBRARY")
 # 设置CMake的最低版本要求为3.20
 cmake_minimum_required(VERSION 3.20)
 
-# 使用find_program查找工具链而不是硬编码路径
-find_program(CROSS_GCC riscv-wch-elf-gcc)
-if(CROSS_GCC)
-    get_filename_component(TOOLCHAIN_BIN_DIR ${CROSS_GCC} DIRECTORY)
-    set(TOOLPATH "${TOOLCHAIN_BIN_DIR}/riscv-wch-elf-")
-    message(STATUS "Found toolchain: ${TOOLPATH}")
-else()
-    # 如果找不到riscv-wch-elf-gcc，尝试寻找riscv-none-elf-gcc
-    find_program(CROSS_GCC_ALT riscv-none-elf-gcc)
-    if(CROSS_GCC_ALT)
-        get_filename_component(TOOLCHAIN_BIN_DIR ${CROSS_GCC_ALT} DIRECTORY)
-        set(TOOLPATH "${TOOLCHAIN_BIN_DIR}/riscv-none-elf-")
-        message(STATUS "Found alternative toolchain: ${TOOLPATH}")
-    else()
-        message(FATAL_ERROR "Cannot find riscv-wch-elf-gcc or riscv-none-elf-gcc. Please ensure the RISC-V GCC toolchain is installed and in your PATH.")
-    endif()
+# 使用 find_program 查找工具链而不是硬编码路径。
+# 新版 MounRiver Studio 2 的 GCC15 已切换为 riscv32-wch-elf-* 前缀。
+set(WCH_TOOLCHAIN_BIN_DIR "" CACHE PATH "Optional absolute path to the WCH RISC-V GCC bin directory")
+set(TOOLCHAIN_CANDIDATES
+        "riscv32-wch-elf-gcc|riscv32-wch-elf-"
+        "riscv-wch-elf-gcc|riscv-wch-elf-"
+        "riscv-none-elf-gcc|riscv-none-elf-"
+)
+
+unset(TOOLPATH)
+if(WCH_TOOLCHAIN_BIN_DIR)
+    foreach(TOOLCHAIN_CANDIDATE ${TOOLCHAIN_CANDIDATES})
+        string(REPLACE "|" ";" TOOLCHAIN_CANDIDATE_PARTS "${TOOLCHAIN_CANDIDATE}")
+        list(GET TOOLCHAIN_CANDIDATE_PARTS 0 TOOLCHAIN_GCC_NAME)
+        list(GET TOOLCHAIN_CANDIDATE_PARTS 1 TOOLCHAIN_PREFIX)
+        if(EXISTS "${WCH_TOOLCHAIN_BIN_DIR}/${TOOLCHAIN_GCC_NAME}.exe" OR
+           EXISTS "${WCH_TOOLCHAIN_BIN_DIR}/${TOOLCHAIN_GCC_NAME}")
+            set(TOOLPATH "${WCH_TOOLCHAIN_BIN_DIR}/${TOOLCHAIN_PREFIX}")
+            message(STATUS "Using toolchain from WCH_TOOLCHAIN_BIN_DIR: ${TOOLPATH}")
+            break()
+        endif()
+    endforeach()
+endif()
+
+if(NOT TOOLPATH AND WIN32)
+    set(DEFAULT_WCH_TOOLCHAIN_DIRS
+            "D:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/Toolchain/RISC-V Embedded GCC15/bin"
+            "C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/Toolchain/RISC-V Embedded GCC15/bin"
+            "D:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/Toolchain/RISC-V Embedded GCC12/bin"
+            "C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/Toolchain/RISC-V Embedded GCC12/bin"
+    )
+    foreach(DEFAULT_WCH_TOOLCHAIN_DIR ${DEFAULT_WCH_TOOLCHAIN_DIRS})
+        foreach(TOOLCHAIN_CANDIDATE ${TOOLCHAIN_CANDIDATES})
+            string(REPLACE "|" ";" TOOLCHAIN_CANDIDATE_PARTS "${TOOLCHAIN_CANDIDATE}")
+            list(GET TOOLCHAIN_CANDIDATE_PARTS 0 TOOLCHAIN_GCC_NAME)
+            list(GET TOOLCHAIN_CANDIDATE_PARTS 1 TOOLCHAIN_PREFIX)
+            if(EXISTS "${DEFAULT_WCH_TOOLCHAIN_DIR}/${TOOLCHAIN_GCC_NAME}.exe")
+                set(TOOLPATH "${DEFAULT_WCH_TOOLCHAIN_DIR}/${TOOLCHAIN_PREFIX}")
+                message(STATUS "Using toolchain from default MounRiver path: ${TOOLPATH}")
+                break()
+            endif()
+        endforeach()
+        if(TOOLPATH)
+            break()
+        endif()
+    endforeach()
+endif()
+
+if(NOT TOOLPATH)
+    foreach(TOOLCHAIN_CANDIDATE ${TOOLCHAIN_CANDIDATES})
+        string(REPLACE "|" ";" TOOLCHAIN_CANDIDATE_PARTS "${TOOLCHAIN_CANDIDATE}")
+        list(GET TOOLCHAIN_CANDIDATE_PARTS 0 TOOLCHAIN_GCC_NAME)
+        list(GET TOOLCHAIN_CANDIDATE_PARTS 1 TOOLCHAIN_PREFIX)
+        unset(CROSS_GCC CACHE)
+        find_program(CROSS_GCC ${TOOLCHAIN_GCC_NAME})
+        if(CROSS_GCC)
+            get_filename_component(TOOLCHAIN_BIN_DIR ${CROSS_GCC} DIRECTORY)
+            set(TOOLPATH "${TOOLCHAIN_BIN_DIR}/${TOOLCHAIN_PREFIX}")
+            message(STATUS "Found toolchain in PATH: ${TOOLPATH}")
+            break()
+        endif()
+    endforeach()
+endif()
+
+if(NOT TOOLPATH)
+    message(FATAL_ERROR
+            "Cannot find riscv32-wch-elf-gcc, riscv-wch-elf-gcc, or riscv-none-elf-gcc. "
+            "Please ensure the RISC-V GCC toolchain is installed and in your PATH.")
 endif()
 
 # 如果当前系统是Windows

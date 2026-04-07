@@ -31,6 +31,7 @@
  *
  * 传感器输入：
  * - PA0：浸水传感器模拟量输入
+ * - PC10/PC11：UART4 超声波液位模块（L07A）
  *
  * LED 指示灯（共阳极，低电平点亮）：
  * - PB0：正常状态指示灯（绿色）
@@ -94,6 +95,34 @@ volatile uint8_t last_water_status = 0;  // 上一次的水位状态，用于检
 volatile uint16_t adc_value = 0;         // ADC原始转换结果（0-4095）
 volatile uint16_t voltage_mv = 0;        // 转换后的电压值（单位：毫伏）
 
+#if ENABLE_ULTRASONIC_SENSOR
+/* 超声波液位相关全局变量 */
+#define ULTRASONIC_MSG_HEARTBEAT 4
+#define ULTRASONIC_MSG_HIGH_LEVEL 5
+#define ULTRASONIC_MSG_PERIODIC  6
+#define ULTRASONIC_MSG_STARTUP   7
+#define ULTRASONIC_FRAME_HEADER  0xFF
+#define ULTRASONIC_ERR_INTERFERENCE 0xFFFE
+#define ULTRASONIC_ERR_NO_OBJECT    0xFFFD
+
+volatile uint16_t ultrasonic_last_distance_mm = 0;   // 最近一次原始测距值
+volatile uint16_t ultrasonic_last_filtered_distance_mm = 0;  // 最近一次滤波后的测距值
+volatile uint8_t ultrasonic_high_level_status = 0;   // 高液位状态：0=正常，1=高液位
+volatile uint8_t ultrasonic_data_valid = 0;          // 是否已有有效测距数据
+
+static uint16_t ultrasonic_samples[ULTRASONIC_FILTER_SAMPLE_COUNT];
+static uint16_t ultrasonic_sample_count = 0;
+static uint16_t ultrasonic_sample_index = 0;
+static uint8_t ultrasonic_startup_report_sent = 0;
+static uint8_t ultrasonic_uart_dma_rx_buffer[4];
+
+_Static_assert(ULTRASONIC_FILTER_SAMPLE_COUNT > 0, "ULTRASONIC_FILTER_SAMPLE_COUNT must be > 0");
+_Static_assert((sizeof(ultrasonic_samples) / sizeof(ultrasonic_samples[0])) == ULTRASONIC_FILTER_SAMPLE_COUNT,
+               "ultrasonic_samples size mismatch");
+_Static_assert((sizeof(ultrasonic_uart_dma_rx_buffer) / sizeof(ultrasonic_uart_dma_rx_buffer[0])) == 4,
+               "ultrasonic_uart_dma_rx_buffer must remain 4 bytes");
+#endif
+
 /* ESP8266通信相关全局变量 */
 #if ENABLE_ESP8266
 #define ESP_RX_BUFFER_SIZE 256           // 定义缓冲区大小为256字节
@@ -132,16 +161,6 @@ uint16_t eth_src_port_counter = 0;                       // 源端口计数器�
 uint8_t eth_socket[WCHNET_MAX_SOCKET_NUM];               // Socket数组
 uint8_t eth_recv_buf[WCHNET_MAX_SOCKET_NUM][RECE_BUF_LEN]; // Socket接收缓冲区
 #endif
-
-/*********************************************************************
- * 系统配置常量定义
- *********************************************************************/
-
-/* 浸水检测阈值配置 */
-#define WATER_THRESHOLD_MV    1000       // 判定为浸水的电压阈值（毫伏）
-#define NO_WATER_THRESHOLD_MV 500        // 判定为无水的电压阈值（毫伏）
-#define WATER_CONFIRM_COUNT 2            // 确认浸水状态需要的连续检测次数
-#define NO_WATER_CONFIRM_COUNT 5         // 确认无水状态需要的连续检测次数
 
 /* 调试配置 */
 #define DEBUG_MODE 0                     // 调试模式开关：1=详细日志，0=关键信息
@@ -202,6 +221,12 @@ uint8_t BC260_Init(void);
 uint8_t BC260_ReceiveHTTPResponse(char* buffer, uint16_t buffer_size, uint32_t timeout);
 uint8_t BC260_SendAlert(char* alert_msg);
 uint8_t BC260_SendAlertUDP(uint8_t msg_type, uint8_t water_status, uint8_t flags, uint16_t adc_value);
+#endif
+
+#if ENABLE_ULTRASONIC_SENSOR
+void UART4_Init(void);
+uint8_t UltrasonicSensor_ReadDistance(uint16_t* distance_mm);
+void Ultrasonic_Task(uint32_t now_ms);
 #endif
 
 /* 以太网相关函数声明 */
@@ -555,6 +580,395 @@ void USART2_Init(void)
 }
 #endif /* ENABLE_BC260 */
 
+#if ENABLE_ULTRASONIC_SENSOR
+/*********************************************************************
+ * @fn      UART4_Init
+ *
+ * @brief   初始化UART4，用于与L07A超声波液位模块通信
+ *          PC10 - UART4_TX
+ *          PC11 - UART4_RX
+ *
+ * @return  none
+ */
+void UART4_Init(void)
+{
+    GPIO_InitTypeDef GPIO_InitStructure = {0};
+    USART_InitTypeDef USART_InitStructure = {0};
+    DMA_InitTypeDef DMA_InitStructure = {0};
+
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE);
+    /* CH32V208WBU6 上 PC10/PC11 的默认功能就是 UART4_TX/UART4_RX。
+     * USART3_TX_1/RX_1 才是复用功能，因此这里必须保持 UART4 remap = 00b。
+     */
+    AFIO->PCFR2 &= ~((uint32_t)0x00000003);
+
+    // 配置PC10为UART4_TX（复用推挽输出）
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
+    GPIO_Init(GPIOC, &GPIO_InitStructure);
+
+    // 配置PC11为UART4_RX（浮空输入）
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_11;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+    GPIO_Init(GPIOC, &GPIO_InitStructure);
+
+    USART_InitStructure.USART_BaudRate = ULTRASONIC_UART_BAUDRATE;
+    USART_InitStructure.USART_WordLength = USART_WordLength_8b;
+    USART_InitStructure.USART_StopBits = USART_StopBits_1;
+    USART_InitStructure.USART_Parity = USART_Parity_No;
+    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+    USART_InitStructure.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
+
+    USART_Init(UART4, &USART_InitStructure);
+
+    /* CH32V208 (CH32V20x_D8W) DMA mapping table:
+     * USART4_RX -> DMA1 Channel8.
+     */
+    DMA_DeInit(DMA1_Channel8);
+    DMA_InitStructure.DMA_PeripheralBaseAddr = (uint32_t)&UART4->DATAR;
+    DMA_InitStructure.DMA_MemoryBaseAddr = (uint32_t)ultrasonic_uart_dma_rx_buffer;
+    DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralSRC;
+    DMA_InitStructure.DMA_BufferSize = sizeof(ultrasonic_uart_dma_rx_buffer);
+    DMA_InitStructure.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+    DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Enable;
+    DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
+    DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
+    DMA_InitStructure.DMA_Mode = DMA_Mode_Normal;
+    DMA_InitStructure.DMA_Priority = DMA_Priority_VeryHigh;
+    DMA_InitStructure.DMA_M2M = DMA_M2M_Disable;
+    DMA_Init(DMA1_Channel8, &DMA_InitStructure);
+    USART_DMACmd(UART4, USART_DMAReq_Rx, ENABLE);
+    DMA_Cmd(DMA1_Channel8, DISABLE);
+    DMA_ClearFlag(DMA1_FLAG_GL8);
+    DMA_SetCurrDataCounter(DMA1_Channel8, sizeof(ultrasonic_uart_dma_rx_buffer));
+    DMA_Cmd(DMA1_Channel8, ENABLE);
+
+    USART_Cmd(UART4, ENABLE);
+
+    printf("[ULTRASONIC] UART4 initialized on PC10/PC11 @ %lu baud (default mapping, DMA RX ch8)\r\n",
+           (unsigned long)ULTRASONIC_UART_BAUDRATE);
+}
+
+static void Ultrasonic_Filter_AddSample(uint16_t distance_mm)
+{
+    ultrasonic_samples[ultrasonic_sample_index] = distance_mm;
+    ultrasonic_sample_index = (uint16_t)((ultrasonic_sample_index + 1U) % ULTRASONIC_FILTER_SAMPLE_COUNT);
+
+    if(ultrasonic_sample_count < ULTRASONIC_FILTER_SAMPLE_COUNT)
+    {
+        ultrasonic_sample_count++;
+    }
+}
+
+static uint8_t Ultrasonic_ComputeFilteredDistance(uint16_t* filtered_distance)
+{
+    uint16_t sorted[ULTRASONIC_FILTER_SAMPLE_COUNT];
+    uint16_t count = ultrasonic_sample_count;
+    uint16_t trim_count;
+    uint16_t start_index;
+    uint16_t end_index;
+    uint16_t i;
+    uint16_t j;
+    uint32_t total = 0;
+
+    if(filtered_distance == NULL || count == 0)
+    {
+        return 0;
+    }
+
+    for(i = 0; i < count; i++)
+    {
+        sorted[i] = ultrasonic_samples[i];
+    }
+
+    for(i = 1; i < count; i++)
+    {
+        uint16_t key = sorted[i];
+        j = i;
+        while(j > 0 && sorted[j - 1] > key)
+        {
+            sorted[j] = sorted[j - 1];
+            j--;
+        }
+        sorted[j] = key;
+    }
+
+    trim_count = (uint16_t)((count * ULTRASONIC_FILTER_TRIM_PERCENT) / 100U);
+    if((uint16_t)(trim_count * 2U) >= count)
+    {
+        trim_count = 0;
+    }
+
+    start_index = trim_count;
+    end_index = (uint16_t)(count - trim_count);
+
+    for(i = start_index; i < end_index; i++)
+    {
+        total += sorted[i];
+    }
+
+    if(end_index <= start_index)
+    {
+        return 0;
+    }
+
+    *filtered_distance = (uint16_t)((total + ((end_index - start_index) / 2U)) / (end_index - start_index));
+    return 1;
+}
+
+static void Ultrasonic_UART4_ResetRxDma(void)
+{
+    DMA_Cmd(DMA1_Channel8, DISABLE);
+    DMA_ClearFlag(DMA1_FLAG_GL8);
+    memset(ultrasonic_uart_dma_rx_buffer, 0, sizeof(ultrasonic_uart_dma_rx_buffer));
+    DMA_SetCurrDataCounter(DMA1_Channel8, sizeof(ultrasonic_uart_dma_rx_buffer));
+    DMA_Cmd(DMA1_Channel8, ENABLE);
+}
+
+static void Ultrasonic_UART4_FlushRx(void)
+{
+    uint32_t guard = 0;
+
+    /* Clear any stale bytes from the previous transaction before sending
+     * the next measurement trigger.
+     */
+    while((USART_GetFlagStatus(UART4, USART_FLAG_RXNE) != RESET) && (guard < 64U))
+    {
+        (void)UART4->STATR;
+        (void)UART4->DATAR;
+        guard++;
+    }
+
+    (void)UART4->STATR;
+    (void)UART4->DATAR;
+}
+
+static void Ultrasonic_LogReadFailure(const char* reason,
+                                      uint8_t expected_bytes,
+                                      const uint8_t* buffer,
+                                      uint8_t length,
+                                      uint16_t uart_status)
+{
+    uint8_t idx;
+
+    printf("[ULTRASONIC] %s, got %u/%u bytes", reason, length, expected_bytes);
+    if(length > 0U)
+    {
+        printf(":");
+        for(idx = 0; idx < length; idx++)
+        {
+            printf(" %02X", buffer[idx]);
+        }
+    }
+    printf(", STATR=0x%04X\r\n", (unsigned int)uart_status);
+}
+
+static uint8_t Ultrasonic_SendDistanceReport(uint8_t msg_type, uint16_t distance_mm, uint8_t high_level_status)
+{
+#if ENABLE_BC260
+    if(BC260_SendAlertUDP(msg_type, high_level_status, 0, distance_mm))
+    {
+        printf("[ULTRASONIC] UDP report sent: type=%u, distance=%umm, high=%u\r\n",
+               msg_type, distance_mm, high_level_status);
+        return 1;
+    }
+
+    printf("[ULTRASONIC] UDP report failed: type=%u, distance=%umm, high=%u\r\n",
+           msg_type, distance_mm, high_level_status);
+    return 0;
+#else
+    (void)msg_type;
+    (void)distance_mm;
+    (void)high_level_status;
+    return 1;
+#endif
+}
+
+uint8_t UltrasonicSensor_ReadDistance(uint16_t* distance_mm)
+{
+    uint8_t buffer[sizeof(ultrasonic_uart_dma_rx_buffer)];
+    uint8_t length = 0;
+    const uint32_t initial_wait_ms = 50;
+    const uint32_t dma_timeout_ms = 1000;
+    uint8_t i;
+    uint16_t uart_status = 0;
+    uint32_t timeout_ms = dma_timeout_ms;
+
+    if(distance_mm == NULL)
+    {
+        return 0;
+    }
+
+    Ultrasonic_UART4_FlushRx();
+    Ultrasonic_UART4_ResetRxDma();
+
+    while(USART_GetFlagStatus(UART4, USART_FLAG_TC) == RESET);
+    USART_SendData(UART4, 0x01);
+    while(USART_GetFlagStatus(UART4, USART_FLAG_TC) == RESET);
+
+    Delay_Ms(initial_wait_ms);
+
+    while(timeout_ms-- > 0U)
+    {
+        length = (uint8_t)(sizeof(buffer) - DMA_GetCurrDataCounter(DMA1_Channel8));
+        uart_status = UART4->STATR;
+
+        if(length >= (uint8_t)sizeof(buffer))
+        {
+            break;
+        }
+
+        if(DMA_GetFlagStatus(DMA1_FLAG_TE8) != RESET)
+        {
+            break;
+        }
+
+        Delay_Ms(1);
+    }
+
+    length = (uint8_t)(sizeof(buffer) - DMA_GetCurrDataCounter(DMA1_Channel8));
+    memcpy(buffer, ultrasonic_uart_dma_rx_buffer, length);
+
+    if(length < (uint8_t)sizeof(buffer))
+    {
+        Ultrasonic_LogReadFailure("DMA read timeout",
+                                  (uint8_t)sizeof(buffer),
+                                  buffer,
+                                  length,
+                                  uart_status);
+        Ultrasonic_UART4_FlushRx();
+        Ultrasonic_UART4_ResetRxDma();
+        return 0;
+    }
+
+    for(i = 0; i + 3U < length; i++)
+    {
+        uint8_t header = buffer[i];
+        uint8_t data_h = buffer[i + 1U];
+        uint8_t data_l = buffer[i + 2U];
+        uint8_t checksum = buffer[i + 3U];
+        uint16_t distance;
+
+        if(header != ULTRASONIC_FRAME_HEADER)
+        {
+            continue;
+        }
+
+        if((uint8_t)((header + data_h + data_l) & 0xFFU) != checksum)
+        {
+            continue;
+        }
+
+        distance = (uint16_t)(((uint16_t)data_h << 8) | data_l);
+
+        if(distance == ULTRASONIC_ERR_INTERFERENCE)
+        {
+            printf("[ULTRASONIC] Interference detected\r\n");
+            return 0;
+        }
+        if(distance == ULTRASONIC_ERR_NO_OBJECT)
+        {
+            printf("[ULTRASONIC] No object detected\r\n");
+            return 0;
+        }
+#if ULTRASONIC_MIN_DISTANCE_MM > 0
+        if(((uint32_t)distance < (uint32_t)ULTRASONIC_MIN_DISTANCE_MM) ||
+           ((uint32_t)distance > (uint32_t)ULTRASONIC_MAX_DISTANCE_MM))
+#else
+        if((uint32_t)distance > (uint32_t)ULTRASONIC_MAX_DISTANCE_MM)
+#endif
+        {
+            printf("[ULTRASONIC] Distance out of range: %umm\r\n", distance);
+            return 0;
+        }
+
+        *distance_mm = distance;
+        return 1;
+    }
+
+    Ultrasonic_LogReadFailure("Invalid frame received", (uint8_t)sizeof(buffer), buffer, length, uart_status);
+    Ultrasonic_UART4_ResetRxDma();
+    return 0;
+}
+
+void Ultrasonic_Task(uint32_t now_ms)
+{
+    static uint32_t last_sample_ms = 0;
+    static uint32_t last_periodic_report_ms = 0;
+    static uint32_t last_high_level_report_ms = 0;
+    const uint32_t sample_interval_ms =
+        (ULTRASONIC_FILTER_SAMPLE_COUNT > 0)
+            ? ((ULTRASONIC_FILTER_WINDOW_SECONDS * 1000UL) / ULTRASONIC_FILTER_SAMPLE_COUNT)
+            : 1000UL;
+    const uint32_t periodic_interval_ms = ULTRASONIC_PERIODIC_REPORT_INTERVAL_MIN * 60UL * 1000UL;
+    const uint32_t high_level_interval_ms = ULTRASONIC_HIGH_LEVEL_REPORT_INTERVAL_MIN * 60UL * 1000UL;
+    uint16_t distance_mm;
+    uint16_t filtered_distance;
+    uint8_t periodic_due;
+    uint8_t high_level_due;
+
+    if((now_ms - last_sample_ms) < sample_interval_ms)
+    {
+        return;
+    }
+    last_sample_ms = now_ms;
+
+    if(!UltrasonicSensor_ReadDistance(&distance_mm))
+    {
+        return;
+    }
+
+    ultrasonic_last_distance_mm = distance_mm;
+    Ultrasonic_Filter_AddSample(distance_mm);
+    ultrasonic_data_valid = Ultrasonic_ComputeFilteredDistance(&filtered_distance);
+
+    if(!ultrasonic_data_valid)
+    {
+        return;
+    }
+
+    ultrasonic_last_filtered_distance_mm = filtered_distance;
+    ultrasonic_high_level_status = (filtered_distance <= ULTRASONIC_HIGH_LEVEL_DISTANCE_THRESHOLD_MM) ? 1 : 0;
+
+    printf("[ULTRASONIC] Distance=%umm, Filtered=%umm, HighLevel=%u\r\n",
+           distance_mm, filtered_distance, ultrasonic_high_level_status);
+
+    if(!ultrasonic_startup_report_sent)
+    {
+        Ultrasonic_SendDistanceReport(ULTRASONIC_MSG_STARTUP, filtered_distance, ultrasonic_high_level_status);
+        ultrasonic_startup_report_sent = 1;
+    }
+
+    periodic_due = ULTRASONIC_PERIODIC_REPORT_ENABLED &&
+                   ((last_periodic_report_ms == 0) || ((now_ms - last_periodic_report_ms) >= periodic_interval_ms));
+    high_level_due = ULTRASONIC_HIGH_LEVEL_REPORT_ENABLED &&
+                     ultrasonic_high_level_status &&
+                     ((last_high_level_report_ms == 0) || ((now_ms - last_high_level_report_ms) >= high_level_interval_ms));
+
+    if(high_level_due)
+    {
+        if(Ultrasonic_SendDistanceReport(ULTRASONIC_MSG_HIGH_LEVEL, filtered_distance, ultrasonic_high_level_status))
+        {
+            last_high_level_report_ms = now_ms;
+            if(periodic_due)
+            {
+                last_periodic_report_ms = now_ms;
+            }
+        }
+        return;
+    }
+
+    if(periodic_due)
+    {
+        if(Ultrasonic_SendDistanceReport(ULTRASONIC_MSG_PERIODIC, filtered_distance, ultrasonic_high_level_status))
+        {
+            last_periodic_report_ms = now_ms;
+        }
+    }
+}
+#endif /* ENABLE_ULTRASONIC_SENSOR */
+
 /*********************************************************************
  * @fn      ADC_Read_Voltage
  *
@@ -598,41 +1012,46 @@ uint16_t ADC_Read_Voltage(void)
  * @return  none
  *
  * @note    使用双阈值+计数器去抖动：
- *          - 电压 >= WATER_THRESHOLD_MV 且连续 WATER_CONFIRM_COUNT 次 → 确认浸水
- *          - 电压 < NO_WATER_THRESHOLD_MV 且连续 NO_WATER_CONFIRM_COUNT 次 → 确认干燥
+ *          - 电压 >= IMMERSION_WET_THRESHOLD_MV 且连续 IMMERSION_WET_CONFIRM_COUNT 次 → 确认浸水
+ *          - 电压 < IMMERSION_DRY_THRESHOLD_MV 且连续 IMMERSION_DRY_CONFIRM_COUNT 次 → 确认干燥
  *          - 电压在中间区域 → 保持当前状态
  */
 void Sensor_Status_Check(void)
 {
+#if !ENABLE_IMMERSION_SENSOR
+    water_status = 0;
+    last_water_status = 0;
+    return;
+#else
     // 读取传感器电压值
     voltage_mv = ADC_Read_Voltage();
     adc_value = voltage_mv;  // ADC值与电压1:1映射
 
     // 输出传感器状态日志
     printf("[SENSOR] ADC: %d, Voltage: %dmV, Threshold: %dmV, Status: %s\r\n",
-           adc_value, voltage_mv, WATER_THRESHOLD_MV,
-           (voltage_mv >= WATER_THRESHOLD_MV) ? "WET" : "DRY");
+           adc_value, voltage_mv, IMMERSION_WET_THRESHOLD_MV,
+           (voltage_mv >= IMMERSION_WET_THRESHOLD_MV) ? "WET" : "DRY");
 
     // 去抖动状态机
-    if(voltage_mv >= WATER_THRESHOLD_MV)
+    if(voltage_mv >= IMMERSION_WET_THRESHOLD_MV)
     {
         // 检测到高电压（可能浸水）
         water_counter++;
         no_water_counter = 0;
 
-        if(water_counter >= WATER_CONFIRM_COUNT)
+        if(water_counter >= IMMERSION_WET_CONFIRM_COUNT)
         {
             water_status = 1;  // 确认浸水
             water_counter = 0;
         }
     }
-    else if(voltage_mv < NO_WATER_THRESHOLD_MV)
+    else if(voltage_mv < IMMERSION_DRY_THRESHOLD_MV)
     {
         // 检测到低电压（可能干燥）
         no_water_counter++;
         water_counter = 0;
 
-        if(no_water_counter >= NO_WATER_CONFIRM_COUNT)
+        if(no_water_counter >= IMMERSION_DRY_CONFIRM_COUNT)
         {
             water_status = 0;  // 确认干燥
             no_water_counter = 0;
@@ -644,6 +1063,7 @@ void Sensor_Status_Check(void)
         water_counter = 0;
         no_water_counter = 0;
     }
+#endif
 }
 
 /*********************************************************************
@@ -658,28 +1078,43 @@ void Sensor_Status_Check(void)
 void LED_Control(void)
 {
     static uint8_t last_led_state = 0xFF;  // 用于检测LED状态变化
+    uint8_t alarm_active = 0;
 
-    if(water_status == 0)
+#if ENABLE_IMMERSION_SENSOR
+    if(water_status != 0)
     {
-        // 无水状态
+        alarm_active = 1;
+    }
+#endif
+
+#if ENABLE_ULTRASONIC_SENSOR
+    if(ULTRASONIC_HIGH_LEVEL_REPORT_ENABLED && ultrasonic_high_level_status)
+    {
+        alarm_active = 1;
+    }
+#endif
+
+    if(!alarm_active)
+    {
+        // 正常状态
         GPIO_ResetBits(GPIOB, GPIO_Pin_0);  // 点亮LED3（PB0）- 共阳极，低电平点亮
         GPIO_SetBits(GPIOB, GPIO_Pin_1);    // 熄灭LED4（PB1）
 
         if(last_led_state != 0)
         {
-            printf("[LED] State: DRY - LED3(PB0)=ON(green), LED4(PB1)=OFF\r\n");
+            printf("[LED] State: NORMAL - LED3(PB0)=ON(green), LED4(PB1)=OFF\r\n");
             last_led_state = 0;
         }
     }
     else
     {
-        // 有水状态
+        // 任一异常源触发：浸水 或 超声高液位
         GPIO_SetBits(GPIOB, GPIO_Pin_0);    // 熄灭LED3（PB0）
         GPIO_ResetBits(GPIOB, GPIO_Pin_1);  // 点亮LED4（PB1）- 共阳极，低电平点亮
 
         if(last_led_state != 1)
         {
-            printf("[LED] State: WET - LED3(PB0)=OFF, LED4(PB1)=ON(red)\r\n");
+            printf("[LED] State: ALARM - LED3(PB0)=OFF, LED4(PB1)=ON(red)\r\n");
             last_led_state = 1;
         }
     }
@@ -1859,9 +2294,16 @@ uint8_t BC260_Init(void)
     BC260_initialized = 1;
     printf("[BC260] BC260 NB-IoT module initialized!\r\n");
 
-    // 发送初始化完成消息（使用UDP心跳消息）
-    printf("[BC260] Sending initialization heartbeat via UDP...\r\n");
-    BC260_SendAlertUDP(0, 0, 0, 0);  // 心跳消息，type=0, water=0, flags=0, adc=0
+    // 发送初始化完成消息。按当前启用的传感器类型选择消息类型，避免超声-only场景误判为浸水心跳。
+#if ENABLE_IMMERSION_SENSOR
+    printf("[BC260] Sending immersion initialization heartbeat via UDP...\r\n");
+    BC260_SendAlertUDP(0, 0, 0, 0);
+#elif ENABLE_ULTRASONIC_SENSOR
+    printf("[BC260] Sending ultrasonic initialization heartbeat via UDP...\r\n");
+    BC260_SendAlertUDP(ULTRASONIC_MSG_HEARTBEAT, 0, 0, 0);
+#else
+    printf("[BC260] No sensor module enabled, skipping initialization heartbeat.\r\n");
+#endif
 
     return 1;
 }
@@ -3206,6 +3648,10 @@ void USART_Report_Status(void)
     static uint8_t nbiot_sent = 0;    // 记录是否已通过NB-IoT发送
     static uint8_t eth_sent = 0;      // 记录是否已通过以太网发送
 
+#if !ENABLE_IMMERSION_SENSOR
+    return;
+#endif
+
     if(water_status != last_water_status)
     {
         // 状态发生变化才输出
@@ -3345,15 +3791,15 @@ int main(void)
 #endif
 
     // 统一使能所有外设时钟（包括DMA）
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_USART1, ENABLE);
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART2 | RCC_APB1Periph_USART3, ENABLE);  // USART2用于BC260，USART3为历史兼容保留
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_GPIOC | RCC_APB2Periph_USART1, ENABLE);
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART2 | RCC_APB1Periph_USART3 | RCC_APB1Periph_UART4, ENABLE);
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);  // 使能DMA1时钟
 
 #if DEBUG_MODE
     printf("[DEBUG] Peripheral clocks enabled (including DMA1)\r\n");
 #endif
     
-    // 初始化GPIO、ADC、USART1、USART2和USART3
+    // 初始化GPIO、ADC、USART1、USART2、USART3和UART4
     GPIO_Init_For_Sensor();
     ADC_Function_Init();
     USART1_Init();
@@ -3362,6 +3808,9 @@ int main(void)
 #endif
 #if ENABLE_ESP8266
     USART3_Init();  // ESP8266 WiFi通信
+#endif
+#if ENABLE_ULTRASONIC_SENSOR
+    UART4_Init();   // L07A 超声波液位模块
 #endif
 
 #if DEBUG_MODE
@@ -3396,7 +3845,10 @@ int main(void)
     
     // 输出启动信息
     printf("\r\n=== Water Immersion Detection System Started ===\r\n");
-    printf("Water detection threshold: %dmV\r\n", WATER_THRESHOLD_MV);
+    printf("Immersion sensor: %s\r\n", ENABLE_IMMERSION_SENSOR ? "ENABLED" : "DISABLED");
+#if ENABLE_IMMERSION_SENSOR
+    printf("Water detection threshold: %dmV\r\n", IMMERSION_WET_THRESHOLD_MV);
+#endif
     printf("WiFi SSID: %s\r\n", WIFI_SSID);
     
     // 初始化ESP8266
@@ -3418,7 +3870,7 @@ int main(void)
                 "阈值: %dmV\n"
                 "状态: 正常运行",
                 WIFI_SSID,
-                WATER_THRESHOLD_MV);
+                IMMERSION_WET_THRESHOLD_MV);
 
         // 发送启动通知
         if(ESP8266_SendWebhookAlert(startup_msg))
@@ -3437,8 +3889,22 @@ int main(void)
 #else
     // ESP8266未启用
     printf("\r\n=== Water Immersion Detection System Started ===\r\n");
-    printf("Water detection threshold: %dmV\r\n", WATER_THRESHOLD_MV);
+    printf("Immersion sensor: %s\r\n", ENABLE_IMMERSION_SENSOR ? "ENABLED" : "DISABLED");
+#if ENABLE_IMMERSION_SENSOR
+    printf("Water detection threshold: %dmV\r\n", IMMERSION_WET_THRESHOLD_MV);
+#endif
     printf("ESP8266 WiFi module: DISABLED\r\n");
+#endif
+
+#if ENABLE_ULTRASONIC_SENSOR
+    printf("Ultrasonic sensor: ENABLED (UART4 PC10/PC11)\r\n");
+    printf("Ultrasonic distance high-level threshold: %dmm\r\n", ULTRASONIC_HIGH_LEVEL_DISTANCE_THRESHOLD_MM);
+    printf("Ultrasonic filter: window=%lus, samples=%u, trim=%u%%\r\n",
+           (unsigned long)ULTRASONIC_FILTER_WINDOW_SECONDS,
+           (unsigned int)ULTRASONIC_FILTER_SAMPLE_COUNT,
+           (unsigned int)ULTRASONIC_FILTER_TRIM_PERCENT);
+#else
+    printf("Ultrasonic sensor: DISABLED\r\n");
 #endif
 
 #if ENABLE_BC260
@@ -3449,16 +3915,28 @@ int main(void)
         printf("BC260 NB-IoT module initialized successfully!\r\n");
         BC260_initialized = 1;
 
-        // 发送系统启动通知
+        // 发送系统启动通知。浸水和超声分别使用各自的消息类型，避免统一落到浸水启动包。
         printf("Sending system startup notification via BC260 NB-IoT...\r\n");
-        if(BC260_SendAlertUDP(3, 0, 0, 0))
+        if(
+#if ENABLE_IMMERSION_SENSOR
+            BC260_SendAlertUDP(3, 0, 0, 0)
+#else
+            1
+#endif
+        )
         {
-            printf("Startup notification sent successfully!\r\n");
+#if ENABLE_IMMERSION_SENSOR
+            printf("Immersion startup notification sent successfully!\r\n");
+#endif
         }
         else
         {
-            printf("Failed to send startup notification.\r\n");
+            printf("Failed to send immersion startup notification.\r\n");
         }
+
+#if ENABLE_ULTRASONIC_SENSOR
+        printf("Ultrasonic startup notification will be sent after first valid sample.\r\n");
+#endif
     }
     else
     {
@@ -3505,7 +3983,7 @@ int main(void)
                     "检测阈值: %dmV\n"
                     "状态: 正常运行",
                     IPAddr[0], IPAddr[1], IPAddr[2], IPAddr[3],
-                    WATER_THRESHOLD_MV);
+                    IMMERSION_WET_THRESHOLD_MV);
 
             if(ETH_SendWebhookAlert(startup_msg))
             {
@@ -3695,6 +4173,10 @@ send_command:
         // global_timer自增，使用无符号整数的自然溢出特性
         // 差值比较 (global_timer - last_sensor_check) 在溢出时仍然正确
         global_timer++;
+
+#if ENABLE_ULTRASONIC_SENSOR
+        Ultrasonic_Task(global_timer);
+#endif
 
         if(global_timer - last_sensor_check >= 1000)
         {

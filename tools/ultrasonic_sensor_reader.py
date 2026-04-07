@@ -5,9 +5,14 @@
 串口配置: 115200/8/N/1
 数据格式: 4字节帧 [帧头0xFF, Data_H, Data_L, SUM校验和]
 
+说明:
+  - 串口底层是有序字节流，一帧可能被拆成多次 read() 返回
+  - 但拼接后的字节顺序仍应是完整4字节帧，不能重排成其他顺序
+  - 特殊值 0xFFFE 表示同频干扰，0xFFFD 表示未检测到物体
+
 硬件参数定义:
-  - 最大有效距离: 3000mm
-  - 波特率: 115200
+  - 最大有效距离: 默认从 config.env 的 ULTRASONIC_MAX_DISTANCE_MM 读取
+  - 波特率: 默认从 config.env 的 ULTRASONIC_UART_BAUDRATE 读取
   - 数据位: 8位
   - 校验: 无
   - 停止位: 1位
@@ -15,12 +20,15 @@
 使用方法:
     python ultrasonic_sensor_reader.py -p COM3
     python ultrasonic_sensor_reader.py --port COM4
+    python ultrasonic_sensor_reader.py --config ..\\config.env
+    python ultrasonic_sensor_reader.py --max-distance 4000
     python ultrasonic_sensor_reader.py -p COM3 --window-size 10 --trim-ratio 0.1
 """
 
 import serial
 import time
 import argparse
+import os
 from collections import deque
 from typing import Optional, Tuple, List
 
@@ -38,10 +46,46 @@ DEFAULT_REPORT_INTERVAL = 5.0   # 默认报告间隔(秒)
 DEFAULT_TRIM_RATIO = 0.1        # 默认修剪比例(10%)
 
 
+def load_config(config_path: Optional[str] = None) -> dict:
+    """从 config.env 加载配置"""
+    if config_path is None:
+        possible_paths = [
+            'config.env',
+            '../config.env',
+            os.path.join(os.path.dirname(__file__), '..', 'config.env'),
+            os.path.join(os.path.dirname(__file__), 'config.env')
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                config_path = path
+                break
+
+    config = {}
+    if config_path and os.path.exists(config_path):
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        config[key.strip()] = value.strip()
+        except OSError as exc:
+            print(f"加载配置文件失败: {exc}")
+    return config
+
+
 class UltrasonicSensor:
     """超声波传感器类，封装传感器操作"""
 
-    def __init__(self, port: str, baudrate: int = SENSOR_BAUD_RATE, timeout: float = TIMEOUT):
+    def __init__(
+        self,
+        port: str,
+        baudrate: int = SENSOR_BAUD_RATE,
+        timeout: float = TIMEOUT,
+        max_valid_distance_mm: int = MAX_VALID_DISTANCE_MM
+    ):
         """
         初始化传感器
         
@@ -53,6 +97,7 @@ class UltrasonicSensor:
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        self.max_valid_distance_mm = max_valid_distance_mm
         self.ser: Optional[serial.Serial] = None
 
     def open(self) -> bool:
@@ -148,8 +193,8 @@ class UltrasonicSensor:
             return None, False, "未检测到物体"
 
         # 检查最大有效距离
-        if distance > MAX_VALID_DISTANCE_MM:
-            return None, False, f"距离超出有效范围: {distance}mm > {MAX_VALID_DISTANCE_MM}mm"
+        if distance > self.max_valid_distance_mm:
+            return None, False, f"距离超出有效范围: {distance}mm > {self.max_valid_distance_mm}mm"
 
         return distance, True, None
 
@@ -169,7 +214,7 @@ class UltrasonicSensor:
         time.sleep(wait_time)
 
         try:
-            # 读取可用数据(可能多于4字节)
+            # 读取可用数据。一次read()可能只拿到部分字节，但顺序应保持原始串口顺序。
             data = self.ser.read(self.ser.in_waiting or 4)
             return self.parse_data(data)
         except serial.SerialException as e:
@@ -305,14 +350,36 @@ def main():
   # 窗口采样模式(窗口大小10，每0.1秒采样一次，每1秒报告)
   python ultrasonic_sensor_reader.py -p COM3 -w 10 -i 0.1 -r 1.0
   
+  # 从 config.env 读取波特率和最大有效距离
+  python ultrasonic_sensor_reader.py -p COM3 --config ..\\config.env
+
   # 调整修剪比例(去除20%极值)
   python ultrasonic_sensor_reader.py -p COM3 -w 10 --trim-ratio 0.2
+
+  # 直接覆盖最大有效距离
+  python ultrasonic_sensor_reader.py -p COM3 --max-distance 4000
         '''
     )
     parser.add_argument(
         '-p', '--port',
         default=DEFAULT_PORT,
         help=f'串口号 (默认: {DEFAULT_PORT})'
+    )
+    parser.add_argument(
+        '--config',
+        help='指定 config.env 路径'
+    )
+    parser.add_argument(
+        '--baudrate',
+        type=int,
+        default=None,
+        help='串口波特率，默认优先读取 config.env 中的 ULTRASONIC_UART_BAUDRATE'
+    )
+    parser.add_argument(
+        '--max-distance',
+        type=int,
+        default=None,
+        help='最大有效距离(mm)，默认优先读取 config.env 中的 ULTRASONIC_MAX_DISTANCE_MM'
     )
     parser.add_argument(
         '-w', '--window-size',
@@ -345,12 +412,16 @@ def main():
     )
     args = parser.parse_args()
 
+    config = load_config(args.config)
+    baudrate = args.baudrate or int(config.get('ULTRASONIC_UART_BAUDRATE', SENSOR_BAUD_RATE))
+    max_valid_distance_mm = args.max_distance or int(config.get('ULTRASONIC_MAX_DISTANCE_MM', MAX_VALID_DISTANCE_MM))
+
     print("=" * 60)
     print("超声波液位传感器测试程序 (L07A)")
     print("=" * 60)
     print(f"串口: {args.port}")
-    print(f"波特率: {SENSOR_BAUD_RATE}")
-    print(f"最大有效距离: {MAX_VALID_DISTANCE_MM}mm")
+    print(f"波特率: {baudrate}")
+    print(f"最大有效距离: {max_valid_distance_mm}mm")
 
     use_window_mode = args.window_size > 0
     if use_window_mode:
@@ -367,7 +438,11 @@ def main():
     print("按 Ctrl+C 停止程序\n")
 
     try:
-        with UltrasonicSensor(args.port, SENSOR_BAUD_RATE) as sensor:
+        with UltrasonicSensor(
+            args.port,
+            baudrate=baudrate,
+            max_valid_distance_mm=max_valid_distance_mm
+        ) as sensor:
             if not sensor.ser:
                 return
 

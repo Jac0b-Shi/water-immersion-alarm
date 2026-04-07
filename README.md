@@ -42,6 +42,7 @@
 
 ### 核心功能
 - 🌊 **实时浸水检测**：通过ADC模拟量输入检测水位，阈值可配置（默认1000mV）
+- 📏 **超声波液位检测**：支持L07A类UART超声波模块，使用UART4默认映射与DMA接收固定4字节测距帧
 - 💡 **双LED状态指示**：共阳极LED分别指示正常/报警状态
 - 📱 **企业微信推送**：通过BC260 NB-IoT或内置以太网推送报警信息
 - 🔄 **自动状态管理**：智能检测浸水/解除状态变化，避免重复报警
@@ -49,6 +50,7 @@
 ### 通信功能
 - **USART1**：调试信息输出（115200波特率）
 - **USART2**：BC260 NB-IoT AT指令通信（9600波特率）
+- **UART4**：超声波液位模块通信（PC10/PC11 默认映射，115200波特率，RX使用DMA1_Channel8）
 - **内置以太网**：CH32V208特有10M以太网（需HTTP代理）
 - **多模块支持**：当前维护 NB-IoT/以太网两种通信方式
 
@@ -89,6 +91,8 @@
 | **BC260 TX** | PA2 | USART2发送数据到BC260 |
 | **BC260 RX** | PA3 | USART2接收BC260数据 |
 | **BC260复位** | PA1 | GPIO输出，高电平复位 |
+| **超声波TX** | PC10 | UART4默认发送脚，115200波特率 |
+| **超声波RX** | PC11 | UART4默认接收脚，115200波特率，固件通过DMA1_Channel8接收 |
 
 ### BC260 NB-IoT连接
 
@@ -107,7 +111,7 @@
 
 ### 开发工具
 - **IDE**：CLion 2025+
-- **编译器**：RISC-V GCC 12 (MounRiver Studio 工具链，首选) / @xpack riscv-none-embed-gcc
+- **编译器**：RISC-V GCC 15 / 12（MounRiver Studio 工具链，首选）或 `riscv-none-elf-gcc`
 - **CMake**：3.20+
 - **调试器**：WCH-LinkE / CH340G
 
@@ -154,11 +158,23 @@ HTTP_PROXY_PORT=8080
 
 # 模块启用开关
 ENABLE_ESP8266=0    # 已弃用，不建议启用
+ENABLE_IMMERSION_SENSOR=1  # 1=启用浸水传感器（ADC: PA0）
 ENABLE_BC260=1      # 1=启用BC260 NB-IoT模块
+ENABLE_ULTRASONIC_SENSOR=1  # 1=启用UART4超声波液位模块
 ENABLE_ETHERNET=0   # 1=启用内置以太网
 
 # UDP密钥验证（建议生产环境启用）
 UDP_SECRET_KEY=your_secret_key_here
+
+# 超声波测距参数
+# 协议固定为4字节帧 [0xFF, Data_H, Data_L, SUM]
+# 特殊返回值：0xFFFE=同频干扰，0xFFFD=未检测到物体
+ULTRASONIC_PERIODIC_REPORT_INTERVAL_MIN=30
+ULTRASONIC_HIGH_LEVEL_DISTANCE_THRESHOLD_MM=200
+ULTRASONIC_HIGH_LEVEL_REPORT_INTERVAL_MIN=5
+ULTRASONIC_FILTER_WINDOW_SECONDS=300
+ULTRASONIC_FILTER_SAMPLE_COUNT=50
+ULTRASONIC_FILTER_TRIM_PERCENT=20
 ```
 
 生成配置头文件：
@@ -170,12 +186,13 @@ python generate_config.py config.env User/config.h
 
 > **注意**：`config.env` 和 `User/config.h` 已添加到 `.gitignore`，不会被提交到版本控制系统。
 
-其他编译期参数（在 `User/main.c` 中）：
+浸水传感器参数：
 
 ```c
-// 浸水检测阈值（单位：mV）
-#define WATER_THRESHOLD_MV 1000      // 判定为浸水的电压阈值
-#define NO_WATER_THRESHOLD_MV 500    // 判定为无水的电压阈值
+IMMERSION_WET_THRESHOLD_MV=1000
+IMMERSION_DRY_THRESHOLD_MV=500
+IMMERSION_WET_CONFIRM_COUNT=2
+IMMERSION_DRY_CONFIRM_COUNT=5
 
 // 调试模式
 #define DEBUG_MODE 0                 // 1=启用详细调试输出，0=精简日志
@@ -194,18 +211,24 @@ cmake --build build --target water-immersion-alarm.elf
 ```
 
 > 配置阶段会输出 `Compile target: CH32V208WBU6`。如果修改了 `config.env`，请先重新生成 `User/config.h`，必要时重新运行 CMake 配置。
+> `CMakeLists.txt` 会自动尝试以下工具链前缀：`riscv32-wch-elf-*`、`riscv-wch-elf-*`、`riscv-none-elf-*`。
 
 #### 使用CLion
 1. 打开项目
 2. 选择配置：`RelWithDebInfo-RISC-V (WCH Toolchain)`
 3. 点击构建按钮
+4. 如果 CLion 没有继承到系统 `PATH`，在对应 CMake Profile 的 `CMake options` 里添加：
+
+```bash
+-DWCH_TOOLCHAIN_BIN_DIR=D:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/Toolchain/RISC-V Embedded GCC15/bin
+```
 
 #### 工具链路径参考
 如果需要手动配置工具链，可以参考以下路径：
 ```
-D:\MounRiver\MounRiver_Studio2\resources\app\resources\win32\components\WCH\Toolchain\RISC-V Embedded GCC12\bin\riscv-wch-elf-gcc.exe
+D:\MounRiver\MounRiver_Studio2\resources\app\resources\win32\components\WCH\Toolchain\RISC-V Embedded GCC15\bin\riscv32-wch-elf-gcc.exe
 ```
-这是我 MounRiver Studio 2 的安装路径。
+这是当前使用的 MounRiver Studio 2 GCC15 安装路径。
 
 ### 4. 烧录固件
 
@@ -214,6 +237,8 @@ D:\MounRiver\MounRiver_Studio2\resources\app\resources\win32\components\WCH\Tool
 ### 5. 查看运行状态
 
 通过串口工具（115200, 8N1）连接USART1查看系统运行日志。
+
+超声波模块使用 UART4 的 PC10/PC11 默认映射，接收端为 DMA 固定 4 字节缓冲。如果日志出现 `No object detected`，表示固件已经收到合法帧 `FF FF FD FB`，其语义是“未检测到物体”，而不是串口超时或引脚配置错误。
 
 ## 使用说明
 
@@ -407,7 +432,7 @@ A:
 
 ### Q: 误报警？
 A:
-1. 调整 `WATER_THRESHOLD_MV` 阈值
+1. 调整 `IMMERSION_WET_THRESHOLD_MV` / `IMMERSION_DRY_THRESHOLD_MV` 阈值
 2. 检查传感器接线
 3. 确认传感器工作正常
 4. 避免电磁干扰
@@ -415,9 +440,9 @@ A:
 ## 技术特点
 
 ### DMA通信
-- 串口收发采用 DMA/缓冲区机制，降低 CPU 轮询开销
-- 使用固定大小缓冲区避免连续响应丢包
-- 配合调试日志便于分析 AT 响应和网络收发行为
+- USART3 的历史 ESP8266 路径与 UART4 超声路径均采用 DMA/缓冲区机制，降低 CPU 轮询开销
+- 超声波 UART4 当前使用固定 4 字节 DMA 接收，协议帧为 `[0xFF, Data_H, Data_L, SUM]`
+- 配合调试日志可区分“串口接收失败”和“传感器返回 0xFFFD/0xFFFE 特殊值”
 
 ### 状态管理
 - 智能状态机管理浸水检测

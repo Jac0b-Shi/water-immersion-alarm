@@ -209,8 +209,8 @@ def main():
     parser.add_argument('--water', type=int, default=0, choices=[0, 1],
                         help='水浸状态 (0=无水, 1=有水)')
     parser.add_argument('--adc', type=int, default=2450, help='ADC原始值')
-    parser.add_argument('--type', type=int, default=1, choices=[0, 1, 2],
-                        help='消息类型 (0=心跳, 1=状态变化, 2=电压上报)')
+    parser.add_argument('--type', type=int, default=1, choices=[0, 1, 2, 3, 4, 5, 6, 7],
+                        help='消息类型 (0-3=浸水, 4-7=超声波)')
     parser.add_argument('--flags', type=int, default=0,
                         help='标志位 (bit0=低电量, bit1=传感器故障)')
     parser.add_argument('--hex-mode', action='store_true',

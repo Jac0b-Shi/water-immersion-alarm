@@ -16,11 +16,6 @@
 /* 企业微信Webhook配置 */
 #define WEBHOOK_KEY "your_wechat_webhook_key"
 
-/* 浸水检测阈值（单位：mV） */
-#ifndef WATER_THRESHOLD_MV
-#define WATER_THRESHOLD_MV 1000
-#endif
-
 /* HTTPS/SSL配置 */
 #ifndef USE_SSL
 #define USE_SSL 1  // 1=使用SSL(443端口), 0=使用HTTP(80端口)
@@ -31,6 +26,11 @@
  * 1=启用（编译相关代码）, 0=禁用（不编译相关代码）
  * ======================================== */
 
+/* 浸水传感器模块（ADC: PA0） */
+#ifndef ENABLE_IMMERSION_SENSOR
+#define ENABLE_IMMERSION_SENSOR 1
+#endif
+
 /* ESP8266 WiFi模块（已弃用，不再维护） */
 #ifndef ENABLE_ESP8266
 #define ENABLE_ESP8266 0
@@ -39,6 +39,11 @@
 /* BC260 NB-IoT模块（USART2: PA2-TX, PA3-RX, PA1-RST） */
 #ifndef ENABLE_BC260
 #define ENABLE_BC260 0
+#endif
+
+/* 超声波液位模块（UART4 默认映射: PC10-TX, PC11-RX） */
+#ifndef ENABLE_ULTRASONIC_SENSOR
+#define ENABLE_ULTRASONIC_SENSOR 0
 #endif
 
 /* CH32V208内置10M以太网（ETH: PC6-RXD1, PC7-RXD0, PC8-TXD1, PC9-TXD0）
@@ -65,5 +70,42 @@
 #define ETH_DNS_SERVER  { 8, 8, 8, 8 }
 
 #endif /* ENABLE_ETHERNET */
+
+/* ========================================
+ * 超声波液位配置 (仅在ENABLE_ULTRASONIC_SENSOR=1时有效)
+ * ======================================== */
+#if ENABLE_ULTRASONIC_SENSOR
+
+/* L07A UART4 uses the default PC10/PC11 mapping.
+ * RX is captured with a fixed 4-byte DMA buffer: [0xFF, Data_H, Data_L, SUM].
+ */
+#define ULTRASONIC_UART_BAUDRATE 115200
+/* Special values from the module: 0xFFFE=interference, 0xFFFD=no object. */
+#define ULTRASONIC_MIN_DISTANCE_MM 0
+#define ULTRASONIC_MAX_DISTANCE_MM 3000
+#define ULTRASONIC_PERIODIC_REPORT_ENABLED 1
+#define ULTRASONIC_PERIODIC_REPORT_INTERVAL_MIN 30
+
+#define ULTRASONIC_HIGH_LEVEL_REPORT_ENABLED 1
+#define ULTRASONIC_HIGH_LEVEL_DISTANCE_THRESHOLD_MM 200
+#define ULTRASONIC_HIGH_LEVEL_REPORT_INTERVAL_MIN 5
+
+#define ULTRASONIC_FILTER_WINDOW_SECONDS 300
+#define ULTRASONIC_FILTER_SAMPLE_COUNT 50
+#define ULTRASONIC_FILTER_TRIM_PERCENT 20
+
+#endif /* ENABLE_ULTRASONIC_SENSOR */
+
+/* ========================================
+ * 浸水传感器配置 (仅在ENABLE_IMMERSION_SENSOR=1时有效)
+ * ======================================== */
+#if ENABLE_IMMERSION_SENSOR
+
+#define IMMERSION_WET_THRESHOLD_MV 1000
+#define IMMERSION_DRY_THRESHOLD_MV 500
+#define IMMERSION_WET_CONFIRM_COUNT 2
+#define IMMERSION_DRY_CONFIRM_COUNT 5
+
+#endif /* ENABLE_IMMERSION_SENSOR */
 
 #endif /* __CONFIG_H */
