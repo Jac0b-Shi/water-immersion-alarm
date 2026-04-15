@@ -82,6 +82,9 @@ def validate_config(config):
         for key, minimum, maximum in [
             ('ULTRASONIC_UART_BAUDRATE', 1200, None),
             ('ULTRASONIC_MAX_DISTANCE_MM', 1, 65535),
+            ('ULTRASONIC_SAMPLING_IDLE_SECONDS', 0, 86400),
+            ('ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS', 0, 3600),
+            ('ULTRASONIC_SAMPLING_BURST_INTERVAL_MS', 0, 60000),
             ('ULTRASONIC_PERIODIC_REPORT_INTERVAL_MIN', 1, 1440),
             ('ULTRASONIC_HIGH_LEVEL_DISTANCE_THRESHOLD_MM', 0, 65535),
             ('ULTRASONIC_HIGH_LEVEL_REPORT_INTERVAL_MIN', 1, 1440),
@@ -219,6 +222,14 @@ def generate_header(config, output_file):
 /* 传感器测量有效范围 */
 #define ULTRASONIC_MIN_DISTANCE_MM {config.get('ULTRASONIC_MIN_DISTANCE_MM', '0')}
 #define ULTRASONIC_MAX_DISTANCE_MM {config.get('ULTRASONIC_MAX_DISTANCE_MM', '3000')}
+
+/* 采样调度策略
+ * BURST_DURATION_SECONDS=0 时回退到旧的均匀采样间隔计算；
+ * 否则每次空闲一段时间后，进入一次短时间高频重试窗口，窗口内捕获到首个有效值即结束本轮。
+ */
+#define ULTRASONIC_SAMPLING_IDLE_SECONDS {config.get('ULTRASONIC_SAMPLING_IDLE_SECONDS', '0')}
+#define ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS {config.get('ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS', '0')}
+#define ULTRASONIC_SAMPLING_BURST_INTERVAL_MS {config.get('ULTRASONIC_SAMPLING_BURST_INTERVAL_MS', '0')}
 
 /* 定时上报策略 */
 #define ULTRASONIC_PERIODIC_REPORT_ENABLED {config.get('ULTRASONIC_PERIODIC_REPORT_ENABLED', '1')}

@@ -114,6 +114,11 @@ static uint16_t ultrasonic_samples[ULTRASONIC_FILTER_SAMPLE_COUNT];
 static uint16_t ultrasonic_sample_count = 0;
 static uint16_t ultrasonic_sample_index = 0;
 static uint8_t ultrasonic_startup_report_sent = 0;
+static uint8_t ultrasonic_sampling_initialized = 0;
+static uint8_t ultrasonic_burst_active = 0;
+static uint32_t ultrasonic_sampling_phase_started_ms = 0;
+static uint32_t ultrasonic_last_burst_attempt_ms = 0;
+static uint16_t ultrasonic_burst_attempt_count = 0;
 static uint8_t ultrasonic_uart_dma_rx_buffer[4];
 
 _Static_assert(ULTRASONIC_FILTER_SAMPLE_COUNT > 0, "ULTRASONIC_FILTER_SAMPLE_COUNT must be > 0");
@@ -785,6 +790,66 @@ static uint8_t Ultrasonic_SendDistanceReport(uint8_t msg_type, uint16_t distance
 #endif
 }
 
+static void Ultrasonic_HandleValidDistance(uint16_t distance_mm,
+                                           uint32_t now_ms,
+                                           uint32_t* last_periodic_report_ms,
+                                           uint32_t* last_high_level_report_ms)
+{
+    const uint32_t periodic_interval_ms = ULTRASONIC_PERIODIC_REPORT_INTERVAL_MIN * 60UL * 1000UL;
+    const uint32_t high_level_interval_ms = ULTRASONIC_HIGH_LEVEL_REPORT_INTERVAL_MIN * 60UL * 1000UL;
+    uint16_t filtered_distance;
+    uint8_t periodic_due;
+    uint8_t high_level_due;
+
+    ultrasonic_last_distance_mm = distance_mm;
+    Ultrasonic_Filter_AddSample(distance_mm);
+    ultrasonic_data_valid = Ultrasonic_ComputeFilteredDistance(&filtered_distance);
+
+    if(!ultrasonic_data_valid)
+    {
+        return;
+    }
+
+    ultrasonic_last_filtered_distance_mm = filtered_distance;
+    ultrasonic_high_level_status = (filtered_distance <= ULTRASONIC_HIGH_LEVEL_DISTANCE_THRESHOLD_MM) ? 1 : 0;
+
+    printf("[ULTRASONIC] Distance=%umm, Filtered=%umm, HighLevel=%u\r\n",
+           distance_mm, filtered_distance, ultrasonic_high_level_status);
+
+    if(!ultrasonic_startup_report_sent)
+    {
+        Ultrasonic_SendDistanceReport(ULTRASONIC_MSG_STARTUP, filtered_distance, ultrasonic_high_level_status);
+        ultrasonic_startup_report_sent = 1;
+    }
+
+    periodic_due = ULTRASONIC_PERIODIC_REPORT_ENABLED &&
+                   ((*last_periodic_report_ms == 0U) || ((now_ms - *last_periodic_report_ms) >= periodic_interval_ms));
+    high_level_due = ULTRASONIC_HIGH_LEVEL_REPORT_ENABLED &&
+                     ultrasonic_high_level_status &&
+                     ((*last_high_level_report_ms == 0U) || ((now_ms - *last_high_level_report_ms) >= high_level_interval_ms));
+
+    if(high_level_due)
+    {
+        if(Ultrasonic_SendDistanceReport(ULTRASONIC_MSG_HIGH_LEVEL, filtered_distance, ultrasonic_high_level_status))
+        {
+            *last_high_level_report_ms = now_ms;
+            if(periodic_due)
+            {
+                *last_periodic_report_ms = now_ms;
+            }
+        }
+        return;
+    }
+
+    if(periodic_due)
+    {
+        if(Ultrasonic_SendDistanceReport(ULTRASONIC_MSG_PERIODIC, filtered_distance, ultrasonic_high_level_status))
+        {
+            *last_periodic_report_ms = now_ms;
+        }
+    }
+}
+
 uint8_t UltrasonicSensor_ReadDistance(uint16_t* distance_mm)
 {
     uint8_t buffer[sizeof(ultrasonic_uart_dma_rx_buffer)];
@@ -897,75 +962,97 @@ void Ultrasonic_Task(uint32_t now_ms)
     static uint32_t last_sample_ms = 0;
     static uint32_t last_periodic_report_ms = 0;
     static uint32_t last_high_level_report_ms = 0;
-    const uint32_t sample_interval_ms =
+    const uint32_t legacy_sample_interval_ms =
         (ULTRASONIC_FILTER_SAMPLE_COUNT > 0)
             ? ((ULTRASONIC_FILTER_WINDOW_SECONDS * 1000UL) / ULTRASONIC_FILTER_SAMPLE_COUNT)
             : 1000UL;
-    const uint32_t periodic_interval_ms = ULTRASONIC_PERIODIC_REPORT_INTERVAL_MIN * 60UL * 1000UL;
-    const uint32_t high_level_interval_ms = ULTRASONIC_HIGH_LEVEL_REPORT_INTERVAL_MIN * 60UL * 1000UL;
+    const uint32_t idle_ms = ULTRASONIC_SAMPLING_IDLE_SECONDS * 1000UL;
+    const uint32_t burst_duration_ms = ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS * 1000UL;
+    const uint32_t burst_interval_ms = ULTRASONIC_SAMPLING_BURST_INTERVAL_MS;
+    const uint8_t burst_mode_enabled = (burst_duration_ms > 0U) && (burst_interval_ms > 0U);
     uint16_t distance_mm;
-    uint16_t filtered_distance;
-    uint8_t periodic_due;
-    uint8_t high_level_due;
 
-    if((now_ms - last_sample_ms) < sample_interval_ms)
+    if(!burst_mode_enabled)
+    {
+        if((now_ms - last_sample_ms) < legacy_sample_interval_ms)
+        {
+            return;
+        }
+        last_sample_ms = now_ms;
+
+        if(!UltrasonicSensor_ReadDistance(&distance_mm))
+        {
+            return;
+        }
+
+        Ultrasonic_HandleValidDistance(distance_mm, now_ms, &last_periodic_report_ms, &last_high_level_report_ms);
+        return;
+    }
+
+    if(!ultrasonic_sampling_initialized)
+    {
+        ultrasonic_sampling_initialized = 1;
+        ultrasonic_burst_active = 1;
+        ultrasonic_sampling_phase_started_ms = now_ms;
+        ultrasonic_last_burst_attempt_ms = 0;
+        ultrasonic_burst_attempt_count = 0;
+        printf("[ULTRASONIC] Burst sampling enabled: idle=%lus, burst=%lus, interval=%lums\r\n",
+               (unsigned long)ULTRASONIC_SAMPLING_IDLE_SECONDS,
+               (unsigned long)ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS,
+               (unsigned long)ULTRASONIC_SAMPLING_BURST_INTERVAL_MS);
+    }
+
+    if(!ultrasonic_burst_active)
+    {
+        if((now_ms - ultrasonic_sampling_phase_started_ms) < idle_ms)
+        {
+            return;
+        }
+
+        ultrasonic_burst_active = 1;
+        ultrasonic_sampling_phase_started_ms = now_ms;
+        ultrasonic_last_burst_attempt_ms = 0;
+        ultrasonic_burst_attempt_count = 0;
+    }
+
+    if((now_ms - ultrasonic_sampling_phase_started_ms) >= burst_duration_ms)
+    {
+        if(ultrasonic_burst_attempt_count > 0U)
+        {
+            printf("[ULTRASONIC] Burst window ended without valid reading after %u attempts\r\n",
+                   (unsigned int)ultrasonic_burst_attempt_count);
+        }
+
+        ultrasonic_burst_active = 0;
+        ultrasonic_sampling_phase_started_ms = now_ms;
+        ultrasonic_last_burst_attempt_ms = 0;
+        ultrasonic_burst_attempt_count = 0;
+        return;
+    }
+
+    if((ultrasonic_last_burst_attempt_ms != 0U) &&
+       ((now_ms - ultrasonic_last_burst_attempt_ms) < burst_interval_ms))
     {
         return;
     }
-    last_sample_ms = now_ms;
+
+    ultrasonic_last_burst_attempt_ms = now_ms;
+    ultrasonic_burst_attempt_count++;
 
     if(!UltrasonicSensor_ReadDistance(&distance_mm))
     {
         return;
     }
 
-    ultrasonic_last_distance_mm = distance_mm;
-    Ultrasonic_Filter_AddSample(distance_mm);
-    ultrasonic_data_valid = Ultrasonic_ComputeFilteredDistance(&filtered_distance);
+    printf("[ULTRASONIC] Burst captured valid sample after %u attempts\r\n",
+           (unsigned int)ultrasonic_burst_attempt_count);
 
-    if(!ultrasonic_data_valid)
-    {
-        return;
-    }
+    ultrasonic_burst_active = 0;
+    ultrasonic_sampling_phase_started_ms = now_ms;
+    ultrasonic_last_burst_attempt_ms = 0;
+    ultrasonic_burst_attempt_count = 0;
 
-    ultrasonic_last_filtered_distance_mm = filtered_distance;
-    ultrasonic_high_level_status = (filtered_distance <= ULTRASONIC_HIGH_LEVEL_DISTANCE_THRESHOLD_MM) ? 1 : 0;
-
-    printf("[ULTRASONIC] Distance=%umm, Filtered=%umm, HighLevel=%u\r\n",
-           distance_mm, filtered_distance, ultrasonic_high_level_status);
-
-    if(!ultrasonic_startup_report_sent)
-    {
-        Ultrasonic_SendDistanceReport(ULTRASONIC_MSG_STARTUP, filtered_distance, ultrasonic_high_level_status);
-        ultrasonic_startup_report_sent = 1;
-    }
-
-    periodic_due = ULTRASONIC_PERIODIC_REPORT_ENABLED &&
-                   ((last_periodic_report_ms == 0) || ((now_ms - last_periodic_report_ms) >= periodic_interval_ms));
-    high_level_due = ULTRASONIC_HIGH_LEVEL_REPORT_ENABLED &&
-                     ultrasonic_high_level_status &&
-                     ((last_high_level_report_ms == 0) || ((now_ms - last_high_level_report_ms) >= high_level_interval_ms));
-
-    if(high_level_due)
-    {
-        if(Ultrasonic_SendDistanceReport(ULTRASONIC_MSG_HIGH_LEVEL, filtered_distance, ultrasonic_high_level_status))
-        {
-            last_high_level_report_ms = now_ms;
-            if(periodic_due)
-            {
-                last_periodic_report_ms = now_ms;
-            }
-        }
-        return;
-    }
-
-    if(periodic_due)
-    {
-        if(Ultrasonic_SendDistanceReport(ULTRASONIC_MSG_PERIODIC, filtered_distance, ultrasonic_high_level_status))
-        {
-            last_periodic_report_ms = now_ms;
-        }
-    }
+    Ultrasonic_HandleValidDistance(distance_mm, now_ms, &last_periodic_report_ms, &last_high_level_report_ms);
 }
 #endif /* ENABLE_ULTRASONIC_SENSOR */
 
@@ -3903,6 +3990,17 @@ int main(void)
            (unsigned long)ULTRASONIC_FILTER_WINDOW_SECONDS,
            (unsigned int)ULTRASONIC_FILTER_SAMPLE_COUNT,
            (unsigned int)ULTRASONIC_FILTER_TRIM_PERCENT);
+#if (ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS > 0) && (ULTRASONIC_SAMPLING_BURST_INTERVAL_MS > 0)
+    printf("Ultrasonic sampling: idle=%lus, burst=%lus, interval=%lums\r\n",
+           (unsigned long)ULTRASONIC_SAMPLING_IDLE_SECONDS,
+           (unsigned long)ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS,
+           (unsigned long)ULTRASONIC_SAMPLING_BURST_INTERVAL_MS);
+#else
+    printf("Ultrasonic sampling: legacy interval=%lums\r\n",
+           (unsigned long)((ULTRASONIC_FILTER_SAMPLE_COUNT > 0)
+                               ? ((ULTRASONIC_FILTER_WINDOW_SECONDS * 1000UL) / ULTRASONIC_FILTER_SAMPLE_COUNT)
+                               : 1000UL));
+#endif
 #else
     printf("Ultrasonic sensor: DISABLED\r\n");
 #endif

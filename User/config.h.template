@@ -83,6 +83,17 @@
 /* Special values from the module: 0xFFFE=interference, 0xFFFD=no object. */
 #define ULTRASONIC_MIN_DISTANCE_MM 0
 #define ULTRASONIC_MAX_DISTANCE_MM 3000
+
+/* Sampling schedule:
+ * After idling for 8 seconds, enter a 2-second burst window and retry every
+ * 200ms. The burst ends early once a valid distance is captured.
+ * Set ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS to 0 to fall back to the
+ * legacy evenly spaced sampling interval.
+ */
+#define ULTRASONIC_SAMPLING_IDLE_SECONDS 8
+#define ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS 2
+#define ULTRASONIC_SAMPLING_BURST_INTERVAL_MS 200
+
 #define ULTRASONIC_PERIODIC_REPORT_ENABLED 1
 #define ULTRASONIC_PERIODIC_REPORT_INTERVAL_MIN 30
 
