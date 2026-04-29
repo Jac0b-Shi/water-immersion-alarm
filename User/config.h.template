@@ -86,7 +86,8 @@
 
 /* Sampling schedule:
  * After idling for 8 seconds, enter a 2-second burst window and retry every
- * 200ms. The burst ends early once a valid distance is captured.
+ * 200ms. Valid distances are collected through the whole burst window, then
+ * trimmed and averaged.
  * Set ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS to 0 to fall back to the
  * legacy evenly spaced sampling interval.
  */
@@ -103,7 +104,7 @@
 
 #define ULTRASONIC_FILTER_WINDOW_SECONDS 300
 #define ULTRASONIC_FILTER_SAMPLE_COUNT 50
-#define ULTRASONIC_FILTER_TRIM_PERCENT 20
+#define ULTRASONIC_FILTER_TRIM_PERCENT 25
 
 #endif /* ENABLE_ULTRASONIC_SENSOR */
 

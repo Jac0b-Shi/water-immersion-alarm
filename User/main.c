@@ -104,6 +104,20 @@ volatile uint16_t voltage_mv = 0;        // 转换后的电压值（单位：毫
 #define ULTRASONIC_FRAME_HEADER  0xFF
 #define ULTRASONIC_ERR_INTERFERENCE 0xFFFE
 #define ULTRASONIC_ERR_NO_OBJECT    0xFFFD
+#if (ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS > 0) && (ULTRASONIC_SAMPLING_BURST_INTERVAL_MS > 0)
+#define ULTRASONIC_BURST_SAMPLE_CAPACITY \
+    (((ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS * 1000UL) + ULTRASONIC_SAMPLING_BURST_INTERVAL_MS - 1UL) / ULTRASONIC_SAMPLING_BURST_INTERVAL_MS)
+#else
+#define ULTRASONIC_BURST_SAMPLE_CAPACITY 1U
+#endif
+#if ULTRASONIC_BURST_SAMPLE_CAPACITY > ULTRASONIC_FILTER_SAMPLE_COUNT
+#define ULTRASONIC_TRIM_WORK_BUFFER_SIZE ULTRASONIC_BURST_SAMPLE_CAPACITY
+#else
+#define ULTRASONIC_TRIM_WORK_BUFFER_SIZE ULTRASONIC_FILTER_SAMPLE_COUNT
+#endif
+#if ULTRASONIC_TRIM_WORK_BUFFER_SIZE > 512U
+#error "Ultrasonic trim work buffer cannot exceed 512 samples"
+#endif
 
 volatile uint16_t ultrasonic_last_distance_mm = 0;   // 最近一次原始测距值
 volatile uint16_t ultrasonic_last_filtered_distance_mm = 0;  // 最近一次滤波后的测距值
@@ -111,8 +125,10 @@ volatile uint8_t ultrasonic_high_level_status = 0;   // 高液位状态：0=正�
 volatile uint8_t ultrasonic_data_valid = 0;          // 是否已有有效测距数据
 
 static uint16_t ultrasonic_samples[ULTRASONIC_FILTER_SAMPLE_COUNT];
+static uint16_t ultrasonic_burst_samples[ULTRASONIC_BURST_SAMPLE_CAPACITY];
 static uint16_t ultrasonic_sample_count = 0;
 static uint16_t ultrasonic_sample_index = 0;
+static uint16_t ultrasonic_burst_valid_count = 0;
 static uint8_t ultrasonic_startup_report_sent = 0;
 static uint8_t ultrasonic_sampling_initialized = 0;
 static uint8_t ultrasonic_burst_active = 0;
@@ -122,8 +138,12 @@ static uint16_t ultrasonic_burst_attempt_count = 0;
 static uint8_t ultrasonic_uart_dma_rx_buffer[4];
 
 _Static_assert(ULTRASONIC_FILTER_SAMPLE_COUNT > 0, "ULTRASONIC_FILTER_SAMPLE_COUNT must be > 0");
+_Static_assert(ULTRASONIC_BURST_SAMPLE_CAPACITY > 0, "ULTRASONIC_BURST_SAMPLE_CAPACITY must be > 0");
+_Static_assert(ULTRASONIC_TRIM_WORK_BUFFER_SIZE <= 512U, "ultrasonic trim work buffer too large");
 _Static_assert((sizeof(ultrasonic_samples) / sizeof(ultrasonic_samples[0])) == ULTRASONIC_FILTER_SAMPLE_COUNT,
                "ultrasonic_samples size mismatch");
+_Static_assert((sizeof(ultrasonic_burst_samples) / sizeof(ultrasonic_burst_samples[0])) == ULTRASONIC_BURST_SAMPLE_CAPACITY,
+               "ultrasonic_burst_samples size mismatch");
 _Static_assert((sizeof(ultrasonic_uart_dma_rx_buffer) / sizeof(ultrasonic_uart_dma_rx_buffer[0])) == 4,
                "ultrasonic_uart_dma_rx_buffer must remain 4 bytes");
 #endif
@@ -666,10 +686,9 @@ static void Ultrasonic_Filter_AddSample(uint16_t distance_mm)
     }
 }
 
-static uint8_t Ultrasonic_ComputeFilteredDistance(uint16_t* filtered_distance)
+static uint8_t Ultrasonic_ComputeTrimmedMean(const uint16_t* samples, uint16_t count, uint16_t* trimmed_mean)
 {
-    uint16_t sorted[ULTRASONIC_FILTER_SAMPLE_COUNT];
-    uint16_t count = ultrasonic_sample_count;
+    uint16_t sorted[ULTRASONIC_TRIM_WORK_BUFFER_SIZE];
     uint16_t trim_count;
     uint16_t start_index;
     uint16_t end_index;
@@ -677,14 +696,14 @@ static uint8_t Ultrasonic_ComputeFilteredDistance(uint16_t* filtered_distance)
     uint16_t j;
     uint32_t total = 0;
 
-    if(filtered_distance == NULL || count == 0)
+    if(samples == NULL || trimmed_mean == NULL || count == 0 || count > ULTRASONIC_TRIM_WORK_BUFFER_SIZE)
     {
         return 0;
     }
 
     for(i = 0; i < count; i++)
     {
-        sorted[i] = ultrasonic_samples[i];
+        sorted[i] = samples[i];
     }
 
     for(i = 1; i < count; i++)
@@ -718,8 +737,13 @@ static uint8_t Ultrasonic_ComputeFilteredDistance(uint16_t* filtered_distance)
         return 0;
     }
 
-    *filtered_distance = (uint16_t)((total + ((end_index - start_index) / 2U)) / (end_index - start_index));
+    *trimmed_mean = (uint16_t)((total + ((end_index - start_index) / 2U)) / (end_index - start_index));
     return 1;
+}
+
+static uint8_t Ultrasonic_ComputeFilteredDistance(uint16_t* filtered_distance)
+{
+    return Ultrasonic_ComputeTrimmedMean(ultrasonic_samples, ultrasonic_sample_count, filtered_distance);
 }
 
 static void Ultrasonic_UART4_ResetRxDma(void)
@@ -996,6 +1020,7 @@ void Ultrasonic_Task(uint32_t now_ms)
         ultrasonic_sampling_phase_started_ms = now_ms;
         ultrasonic_last_burst_attempt_ms = 0;
         ultrasonic_burst_attempt_count = 0;
+        ultrasonic_burst_valid_count = 0;
         printf("[ULTRASONIC] Burst sampling enabled: idle=%lus, burst=%lus, interval=%lums\r\n",
                (unsigned long)ULTRASONIC_SAMPLING_IDLE_SECONDS,
                (unsigned long)ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS,
@@ -1013,11 +1038,30 @@ void Ultrasonic_Task(uint32_t now_ms)
         ultrasonic_sampling_phase_started_ms = now_ms;
         ultrasonic_last_burst_attempt_ms = 0;
         ultrasonic_burst_attempt_count = 0;
+        ultrasonic_burst_valid_count = 0;
     }
 
     if((now_ms - ultrasonic_sampling_phase_started_ms) >= burst_duration_ms)
     {
-        if(ultrasonic_burst_attempt_count > 0U)
+        if(ultrasonic_burst_valid_count > 0U)
+        {
+            uint16_t burst_distance_mm;
+
+            if(Ultrasonic_ComputeTrimmedMean(ultrasonic_burst_samples,
+                                             ultrasonic_burst_valid_count,
+                                             &burst_distance_mm))
+            {
+                printf("[ULTRASONIC] Burst averaged %u valid samples from %u attempts: %umm\r\n",
+                       (unsigned int)ultrasonic_burst_valid_count,
+                       (unsigned int)ultrasonic_burst_attempt_count,
+                       (unsigned int)burst_distance_mm);
+                Ultrasonic_HandleValidDistance(burst_distance_mm,
+                                               now_ms,
+                                               &last_periodic_report_ms,
+                                               &last_high_level_report_ms);
+            }
+        }
+        else if(ultrasonic_burst_attempt_count > 0U)
         {
             printf("[ULTRASONIC] Burst window ended without valid reading after %u attempts\r\n",
                    (unsigned int)ultrasonic_burst_attempt_count);
@@ -1027,6 +1071,7 @@ void Ultrasonic_Task(uint32_t now_ms)
         ultrasonic_sampling_phase_started_ms = now_ms;
         ultrasonic_last_burst_attempt_ms = 0;
         ultrasonic_burst_attempt_count = 0;
+        ultrasonic_burst_valid_count = 0;
         return;
     }
 
@@ -1044,15 +1089,11 @@ void Ultrasonic_Task(uint32_t now_ms)
         return;
     }
 
-    printf("[ULTRASONIC] Burst captured valid sample after %u attempts\r\n",
-           (unsigned int)ultrasonic_burst_attempt_count);
-
-    ultrasonic_burst_active = 0;
-    ultrasonic_sampling_phase_started_ms = now_ms;
-    ultrasonic_last_burst_attempt_ms = 0;
-    ultrasonic_burst_attempt_count = 0;
-
-    Ultrasonic_HandleValidDistance(distance_mm, now_ms, &last_periodic_report_ms, &last_high_level_report_ms);
+    if(ultrasonic_burst_valid_count < ULTRASONIC_BURST_SAMPLE_CAPACITY)
+    {
+        ultrasonic_burst_samples[ultrasonic_burst_valid_count] = distance_mm;
+        ultrasonic_burst_valid_count++;
+    }
 }
 #endif /* ENABLE_ULTRASONIC_SENSOR */
 
@@ -4033,7 +4074,7 @@ int main(void)
         }
 
 #if ENABLE_ULTRASONIC_SENSOR
-        printf("Ultrasonic startup notification will be sent after first valid sample.\r\n");
+        printf("Ultrasonic startup notification will be sent after first valid filtered sample.\r\n");
 #endif
     }
     else

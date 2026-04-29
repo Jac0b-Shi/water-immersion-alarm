@@ -96,6 +96,18 @@ def validate_config(config):
             if result is False:
                 return False
 
+        burst_duration_s = int(config.get('ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS', '0'))
+        burst_interval_ms = int(config.get('ULTRASONIC_SAMPLING_BURST_INTERVAL_MS', '0'))
+        if burst_duration_s > 0 and burst_interval_ms > 0:
+            burst_attempts = ((burst_duration_s * 1000) + burst_interval_ms - 1) // burst_interval_ms
+            if burst_attempts > 512:
+                print(
+                    "Error: ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS and "
+                    "ULTRASONIC_SAMPLING_BURST_INTERVAL_MS allow more than 512 samples "
+                    f"per burst ({burst_attempts})"
+                )
+                return False
+
         if 'ULTRASONIC_HIGH_LEVEL_DISTANCE_THRESHOLD_MM' not in config and 'ULTRASONIC_LOW_LEVEL_THRESHOLD_MM' in config:
             config['ULTRASONIC_HIGH_LEVEL_DISTANCE_THRESHOLD_MM'] = config['ULTRASONIC_LOW_LEVEL_THRESHOLD_MM']
         if 'ULTRASONIC_HIGH_LEVEL_REPORT_INTERVAL_MIN' not in config and 'ULTRASONIC_LOW_LEVEL_REPORT_INTERVAL_MIN' in config:
@@ -225,7 +237,7 @@ def generate_header(config, output_file):
 
 /* 采样调度策略
  * BURST_DURATION_SECONDS=0 时回退到旧的均匀采样间隔计算；
- * 否则每次空闲一段时间后，进入一次短时间高频重试窗口，窗口内捕获到首个有效值即结束本轮。
+ * 否则每次空闲一段时间后，进入一次短时间高频重试窗口，窗口结束后对有效样本做修剪均值。
  */
 #define ULTRASONIC_SAMPLING_IDLE_SECONDS {config.get('ULTRASONIC_SAMPLING_IDLE_SECONDS', '0')}
 #define ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS {config.get('ULTRASONIC_SAMPLING_BURST_DURATION_SECONDS', '0')}
@@ -243,7 +255,7 @@ def generate_header(config, output_file):
 /* 滤波窗口策略 */
 #define ULTRASONIC_FILTER_WINDOW_SECONDS {config.get('ULTRASONIC_FILTER_WINDOW_SECONDS', '300')}
 #define ULTRASONIC_FILTER_SAMPLE_COUNT {config.get('ULTRASONIC_FILTER_SAMPLE_COUNT', '50')}
-#define ULTRASONIC_FILTER_TRIM_PERCENT {config.get('ULTRASONIC_FILTER_TRIM_PERCENT', '20')}
+#define ULTRASONIC_FILTER_TRIM_PERCENT {config.get('ULTRASONIC_FILTER_TRIM_PERCENT', '25')}
 
 #endif /* ENABLE_ULTRASONIC_SENSOR */
 
